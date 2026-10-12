@@ -1,0 +1,34 @@
+.tunnel-help {
+  display: grid;
+  gap: 7px;
+  margin: 12px 0;
+  padding: 11px 12px;
+  border: 1px solid #31514c;
+  border-radius: 8px;
+  background: #0c1716;
+}
+
+.tunnel-help strong,
+.tunnel-help small {
+  display: block;
+}
+
+.tunnel-help strong {
+  color: var(--cyan);
+  font-size: 11px;
+}
+
+.tunnel-help small {
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.5;
+}
+
+.tunnel-help code {
+  padding: 8px;
+  border-radius: 5px;
+  background: #080d0d;
+  color: var(--text);
+  font: 10px var(--mono);
+  word-break: break-all;
+}

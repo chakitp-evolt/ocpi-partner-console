@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="th">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Dual-role Partner · OCPI 2.2.1</title>
+  <script src="/console.js?v=refresh-queue"></script>
+  <link rel="stylesheet" href="/style.css">
+  <link rel="stylesheet" href="/branding.css">
+  <link rel="stylesheet" href="/theme.css">
+  <link rel="stylesheet" href="/workspace.css">
+  <link rel="stylesheet" href="/dual.css?v=dual-status-export">
+</head>
+<body class="qa-friendly dual-page">
+  <header class="topbar lab-topbar">
+    <div class="brand"><span class="brand-mark">O</span><div><strong>OCPI Workspace</strong><small>Evolt · Partner operations</small></div></div>
+    <nav class="lab-nav" aria-label="Test lanes"></nav>
+    <div class="top-actions lab-actions dual-header-actions"><a class="button ghost compact-action" href="/dual/api/emsp/export">Export eMSP</a><a class="button ghost compact-action" href="/dual/api/cpo/export">Export CPO</a><button type="button" class="button reset-trigger compact-action" onclick="dualOpenReset()">Reset Dual</button></div>
+  </header>
+  <main class="dual-main">
+    <section class="dual-hero">
+      <span class="eyebrow">ONE PARTNER · TWO OCPI ROLES</span>
+      <h1>Dual-role Partner</h1>
+      <p>Partner รายเดียวที่เป็นทั้ง CPO และ eMSP ใช้ Credentials ชุดเดียวกัน ตั้งค่าการเชื่อมต่อที่นี่ แล้วเปิด workspace ของแต่ละขาเพื่อทดสอบ</p>
+    </section>
+    <section class="dual-connection panel">
+      <div class="panel-title"><div><span class="eyebrow">01 · SHARED CREDENTIALS</span><h2>Connection เดียวสำหรับทั้งสองขา</h2><p>ลงทะเบียนครั้งเดียว โดยประกาศ CPO และ EMSP ใน Credentials.roles</p></div><span id="dualStatus" class="pill neutral">LOADING</span></div>
+      <div class="dual-facts">
+        <div><small>REGISTER STATUS</small><strong id="dualConnectionStatus">กำลังโหลด…</strong></div>
+        <div><small>PARTNER IDENTITY</small><strong id="dualIdentity">—</strong></div>
+        <div><small>EVOLT ENDPOINTS</small><strong id="dualEndpointCount">—</strong></div>
+        <div><small>EVOLT ROLES</small><strong id="dualRemoteRoles">—</strong></div>
+      </div>
+      <form id="dualConnectionForm" class="dual-connection-form" onsubmit="event.preventDefault();saveDualConnection()">
+        <div class="dual-form-grid">
+          <label>Evolt Versions URL<input id="dualVersionsInput" type="url" value="http://bff-external-service.dev.evtech.dev/api/ocpi/versions" placeholder="https://…/api/ocpi/versions"></label>
+          <label>Partner public URL<input id="dualPublicInput" type="url" placeholder="https://…/dual"></label>
+          <label class="dual-token-input">Token A<input id="dualTokenA" type="password" autocomplete="off" placeholder="เว้นว่างเพื่อใช้ค่าเดิม"></label>
+        </div>
+        <details class="dual-advanced">
+          <summary>Advanced settings · identity, run name และ compatibility</summary>
+          <label class="dual-run-name">Run name <small>ชื่อช่วยจำรอบทดสอบ ปรากฏใน Export eMSP; ไม่ใช้แยกข้อมูลและไม่ส่งใน OCPI</small><input id="dualRunName" value="Evolt black-box run" autocomplete="off"></label>
+          <div class="dual-form-grid dual-identity-grid">
+            <label>Country<input id="dualCountryCode" maxlength="2" value="TH"></label>
+            <label>Party ID<input id="dualPartyID" maxlength="3" value="TST"></label>
+            <label>Business<input id="dualBusinessName" value="OCPI Partner Mock"></label>
+          </div>
+          <div class="dual-checks"><label><input id="dualStrict" type="checkbox"> Strict validation</label><label><input id="dualRawCompat" type="checkbox"> Raw-token compatibility</label></div>
+        </details>
+        <div class="dual-actions">
+          <button type="submit" class="ghost">Save connection</button>
+          <button type="button" onclick="dualAction('discover')">Check connection</button>
+          <button type="button" onclick="dualAction('register')">Connect partner</button>
+          <button type="button" class="ghost" onclick="dualAction('check-credentials')">Check credentials (GET)</button>
+          <button type="button" class="ghost" onclick="dualAction('rotate-credentials')">Rotate credentials</button>
+          <button type="button" class="danger-outline" onclick="dualDisconnect()">Disconnect</button>
+          <button type="button" class="ghost" onclick="dualManualRefresh()">Refresh</button>
+        </div>
+      </form>
+      <p id="dualFeedback" class="dual-feedback" role="status" aria-live="polite"></p>
+      <details class="dual-tools">
+        <summary>ให้ Evolt เริ่ม registration / ดู token สำหรับ QA</summary>
+        <div class="dual-tools-body">
+          <p>หากให้ Evolt เริ่ม handshake ให้สร้าง Token A แล้วนำ token และ Versions URL ไปตั้งค่าที่ Evolt</p>
+          <button type="button" class="ghost" onclick="dualGenerateToken()">Generate Token A</button>
+          <div id="dualInitialTokenPanel" class="dual-generated" hidden><small>แสดงครั้งเดียว · บันทึกก่อนออกจากหน้านี้</small><code id="dualInitialToken"></code><code id="dualInitialVersions"></code><button type="button" class="ghost" onclick="dualCopyInitial()">Copy setup</button></div>
+          <button type="button" class="ghost" onclick="dualShowTokens()">Show QA tokens</button>
+          <div id="dualTokenList" class="dual-token-list"></div>
+        </div>
+      </details>
+    </section>
+    <section class="dual-workspaces" aria-label="สองขาของ partner">
+      <article class="panel dual-workspace-card"><span class="eyebrow">02 · PARTNER AS EMSP</span><h2>รับข้อมูลจาก Evolt CPO</h2><p>ดึง Locations, Tariffs, Sessions, CDRs; ส่ง Token และ Commands; ดู push, callback และ request history</p><small id="dualEMSPReadiness">กำลังตรวจ interface ของ Evolt…</small><div id="dualEMSPInterfaces" class="dual-interface-list"></div><a class="button" href="/dual/emsp">เปิด eMSP workspace →</a></article>
+      <article class="panel dual-workspace-card"><span class="eyebrow">03 · PARTNER AS CPO</span><h2>ส่งข้อมูลให้ Evolt eMSP</h2><p>จัดการ catalogue, Session, CDR และใบแก้ไข; รับ Token/Command; ใช้ Auto Command Flow และมิเตอร์</p><small id="dualCPOReadiness">กำลังตรวจ interface ของ Evolt…</small><div id="dualCPOInterfaces" class="dual-interface-list"></div><a class="button" href="/dual/cpo">เปิด CPO workspace →</a></article>
+    </section>
+    <details class="panel dual-endpoints"><summary>Discovered Evolt endpoints</summary><div id="dualEndpointTable" class="endpoint-table"><div class="empty">Check connection เพื่อดู endpoints</div></div></details>
+    <section class="panel dual-note"><h2>จุดทดสอบของ connection เดียว</h2><p>Partner Versions URL: <code id="dualVersionsURL">—</code> · ทั้งสอง role ใช้ identity และ credentials ร่วมกัน ข้อมูลทดสอบแยกจาก Inbound QA และ Outbound QA เดิม</p></section>
+  </main>
+  <div id="dualResetModal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="dualResetTitle">
+    <div class="modal-card dual-reset-card"><span class="eyebrow">RESET DUAL TEST DATA</span><h2 id="dualResetTitle">ล้างข้อมูลทดสอบ Dual ทั้งสองขา</h2><p>ล้าง connection, ข้อมูล eMSP และ CPO ของ Dual แล้วเริ่มรอบทดสอบใหม่ ข้อมูลของ Inbound QA และ Outbound QA เดิมไม่ถูกล้าง</p><p class="hint warning">ข้อมูล Dual ที่ล้างกู้คืนจาก UI ไม่ได้ ควร Export จากทั้งสองขาก่อน</p><label>พิมพ์ <strong>RESET</strong> เพื่อยืนยัน<input id="dualResetConfirmation" autocomplete="off" placeholder="RESET" oninput="dualSyncResetButton()"></label><div class="modal-actions"><button type="button" class="ghost" onclick="dualCloseReset()">ยกเลิก</button><button id="dualConfirmReset" type="button" class="danger-button" disabled onclick="dualReset()">ล้าง Dual ทั้งสองขา</button></div></div>
+  </div>
+  <div id="dualToast" class="toast" role="status" aria-live="polite"></div>
+  <script src="/dual.js?v=dual-reset-sidebar"></script>
+</body>
+</html>

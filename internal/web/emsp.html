@@ -1,0 +1,150 @@
+<!doctype html>
+<html lang="th">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>eMSP Partner · OCPI Partner Console</title>
+  <script src="/console.js?v=refresh-queue"></script>
+  <link rel="stylesheet" href="/style.css">
+  <link rel="stylesheet" href="/lane-tabs.css">
+  <link rel="stylesheet" href="/public-url.css">
+  <link rel="stylesheet" href="/branding.css">
+  <link rel="stylesheet" href="/theme.css?v=20260910-5">
+  <link rel="stylesheet" href="/requests.css?v=20260909-3">
+  <link rel="stylesheet" href="/workspace.css?v=20260917-full-evidence">
+  <link rel="stylesheet" href="/dual.css?v=dual-evse-connectors">
+</head>
+<body class="qa-friendly inbound-page">
+  <header class="topbar lab-topbar">
+    <div class="brand"><span class="brand-mark">O</span><div><strong>OCPI Partner Console</strong><small>Black-box integration · OCPI 2.2.1</small></div></div>
+    <nav class="lab-nav" aria-label="Partner console"><a class="active" href="/emsp"><strong>eMSP Partner</strong><small>จำลอง Partner eMSP</small></a><a href="/cpo"><strong>CPO Partner</strong><small>จำลอง Partner CPO</small></a><a href="/dual/"><strong>Dual-role Partner</strong><small>CPO + eMSP connection เดียว</small></a></nav>
+    <div class="top-actions lab-actions"><span id="live" class="pill neutral">CONNECTING</span><span id="runStatus" class="pill">SETUP</span><a class="button ghost compact-action" data-icon="download" href="/api/emsp/export">Export</a><button class="button reset-trigger compact-action" data-icon="reset" onclick="openReset()">Reset</button></div>
+  </header>
+
+  <main>
+    <section class="dual-leg-header" aria-label="Dual-role eMSP workspace">
+      <div class="dual-leg-copy"><span class="eyebrow">DUAL-ROLE PARTNER · EMSP</span><h1>eMSP workspace</h1><p>รับข้อมูลชาร์จจาก Evolt CPO ส่ง Token และ Commands แล้วตรวจ Session, CDR และผลลัพธ์ในแต่ละขั้น</p><span class="dual-leg-route">Evolt CPO <b>→</b> Partner eMSP</span></div>
+      <div class="dual-leg-connection"><small>SHARED CONNECTION</small><strong id="dualLegStatus">กำลังโหลด…</strong><span>Credentials ชุดเดียวสำหรับทั้ง eMSP และ CPO</span><a href="/dual/">จัดการ Connection →</a></div>
+    </section>
+    <section class="hero">
+      <div><span class="eyebrow">INBOUND · PARTNER eMSP</span><h1>Test Evolt charging</h1><p class="page-description">เชื่อมต่อ Evolt เลือกสถานี ส่ง Token และทดสอบการชาร์จทีละขั้น</p></div>
+      <div class="hero-note"><strong>เส้นชัย</strong><span>Credentials → Token → Command → Session → CDR</span><small>Session/CDR ต้องเกิดจาก charger activity ฝั่ง CPO จริง</small></div>
+    </section>
+
+    <div id="notice" class="notice hidden"></div>
+    <section class="qa-next-card" aria-live="polite"><div class="qa-next-icon">→</div><div><span class="qa-next-label">ขั้นตอนแนะนำ</span><h2 id="nextActionTitle">กำลังตรวจสถานะ…</h2><p id="nextActionHint">ระบบจะพาไปยังขั้นตอนที่ควรทำต่อ</p></div><button id="nextActionButton" onclick="goToNextStep()">เปิดขั้นตอน</button></section>
+    <nav class="workspace-nav" aria-label="Inbound workspace">
+      <button class="active" data-workspace-view="flow" onclick="selectWorkspaceView('flow')">Test flow</button>
+      <button data-workspace-view="requests" onclick="openInboundRequests()">Requests · Edit &amp; send</button>
+      <button data-workspace-view="activity" onclick="selectWorkspaceView('activity')">Request history</button>
+      <button data-workspace-view="data" onclick="selectWorkspaceView('data')">Partner data</button>
+    </nav>
+    <div id="requestEditorMount"></div>
+    <section class="metrics" data-workspace-panel="flow">
+      <div><small>EXCHANGES</small><strong id="metricExchanges">0</strong></div>
+      <div><small>FINDINGS</small><strong id="metricFindings">0</strong></div>
+      <div><small>SESSIONS</small><strong id="metricSessions">0</strong></div>
+      <div><small>CDRs</small><strong id="metricCdrs">0</strong></div>
+    </section>
+
+    <div class="workspace">
+      <section id="journeyPanel" class="journey panel" data-workspace-panel="flow">
+        <div class="panel-title"><div><span class="eyebrow">INBOUND RUNBOOK</span><h2>กดทดสอบ Evolt CPO ทีละขั้น</h2></div><span class="spec">OCPI 2.2.1</span></div>
+
+        <div id="partnerLane" class="lane active">
+
+        <article class="step open" data-step="1">
+          <div class="step-head"><span class="number">01</span><div><h3>ตั้งค่า connection</h3><p>ข้อมูลที่ partner ได้รับนอก OCPI</p></div><span class="step-state">READY</span></div>
+          <div class="step-body">
+            <label>Run name<input id="runName" value="Evolt black-box run"></label>
+            <label>Evolt Versions URL<input id="versionsURL" placeholder="https://.../ocpi/versions"></label>
+            <label>Token A<input id="tokenA" type="password" placeholder="stored encrypted; leave blank to keep"></label>
+            <label>Partner public URL<input id="publicURL" placeholder="http://host.docker.internal:8088"></label>
+            <div class="tunnel-help"><div><strong>Public URL สำหรับ callback</strong><small>ต้องเป็น URL ที่ Evolt เรียกถึงได้ ค่าเริ่มต้นมาจาก <code>PUBLIC_BASE_URL</code> ของ deployment</small></div></div>
+            <details class="advanced-settings"><summary>Advanced settings <span>Identity และ compatibility</span></summary><div class="advanced-body"><div class="grid3"><label>Country<input id="countryCode" maxlength="2" value="TH"></label><label>Party ID<input id="partyID" maxlength="3" value="TST"></label><label>Business<input id="businessName" value="OCPI Partner Mock"></label></div><div class="switches"><label><input id="strict" type="checkbox"> Strict validation</label><label><input id="rawCompat" type="checkbox"> Raw-token compatibility <span title="OCPI 2.2.1-d2 requires Base64">⚠</span></label></div></div></details>
+            <button onclick="saveConfig()">Save connection</button>
+          </div>
+        </article>
+
+        <article class="step" data-step="2">
+          <div class="step-head"><span class="number">02</span><div><h3>Discover Evolt</h3><p>GET Versions + Version Details</p></div><span class="step-state">WAIT</span></div>
+          <div class="step-body"><p class="hint">ตรวจว่า Versions URL ใช้งานได้ เลือก OCPI 2.2.1 และพบ endpoint ที่ต้องใช้ครบ</p><button onclick="runAction('discover')">Check connection</button></div>
+        </article>
+
+        <article class="step" data-step="3">
+          <div class="step-head"><span class="number">03</span><div><h3>Register credentials</h3><p>Token A → B → C</p></div><span class="step-state">WAIT</span></div>
+          <div class="step-body"><p class="hint">แลก Credentials และ Token A → B → C เพื่อเปิดใช้งานการเชื่อมต่อ</p><div class="row"><button onclick="runAction('register')">Connect partner</button><button class="ghost" onclick="runAction('check-credentials')">Check credentials (GET)</button><button class="ghost" onclick="runAction('rotate-credentials')">Rotate from Partner → Evolt</button></div><p class="hint">Check เป็นการอ่านข้อมูลปัจจุบันและไม่เปลี่ยน token · Rotate ใช้ได้เมื่อ REGISTERED แล้ว และเปลี่ยน token ทั้งสองทิศด้วย PUT</p></div>
+        </article>
+
+        <article class="step" data-step="4">
+          <div class="step-head"><span class="number">04</span><div><h3>Sync CPO catalogue</h3><p>Locations + Tariffs</p></div><span class="step-state">WAIT</span></div>
+          <div class="step-body"><p class="hint">โหลดรายการสถานีและราคาที่ Evolt เปิดให้ Partner ใช้งาน</p><div class="row"><button onclick="pull('locations')">Load stations</button><button class="secondary" onclick="pull('tariffs')">Load prices</button></div></div>
+        </article>
+
+        <article class="step" data-step="5">
+          <div class="step-head"><span class="number">05</span><div><h3>Create & push Token</h3><p>eMSP-owned object</p></div><span class="step-state">WAIT</span></div>
+          <div class="step-body">
+            <div class="dual-token-picker"><label>Token ที่บันทึกไว้<select id="savedTokenSelect" onchange="chooseSavedToken(this.value)"></select></label><p id="savedTokenNote" class="hint"></p></div>
+            <div class="grid2"><label>UID<input id="tokenUID" value="MOCK-RFID-001"></label><label>Type<select id="tokenType"><option>RFID</option><option>APP_USER</option><option>AD_HOC_USER</option><option>OTHER</option></select></label></div>
+            <label>Contract ID<input id="contractID" value="TH-TST-C00000001"></label>
+            <div class="grid2"><label>Whitelist<select id="whitelist"><option>ALLOWED</option><option>ALWAYS</option><option>ALLOWED_OFFLINE</option><option>NEVER</option></select></label><label>Valid<select id="tokenValid"><option value="true">true</option><option value="false">false</option></select></label></div>
+            <div class="row"><button class="secondary" onclick="createToken()">Save test token</button><button onclick="pushToken()">Send token to Evolt</button></div>
+          </div>
+        </article>
+
+        <article class="step" data-step="6">
+          <div class="step-head"><span class="number">06</span><div><h3>Start session</h3><p>Async START_SESSION</p></div><span class="step-state">WAIT</span></div>
+          <div class="step-body">
+            <div class="dual-token-picker"><label>Token สำหรับ START_SESSION<select id="startTokenSelect" onchange="chooseSavedToken(this.value)"></select></label><p class="hint">ใช้ Token ที่บันทึกไว้ใน Partner DB; ถ้าแก้ค่า ให้บันทึกและส่ง Token ก่อนเริ่ม Session</p><button type="button" class="ghost dual-token-edit" onclick="openFlowStep(5)">สร้างหรือแก้ Token</button></div>
+            <div class="dual-location-picker">
+              <label>Location ที่ได้รับจาก Evolt<select id="receivedLocationSelect" onchange="chooseReceivedLocation(this.value)"><option value="">กรอก Location ID เอง</option></select></label>
+              <div class="grid2"><label>EVSE UID ใน Location<select id="receivedEVSESelect" onchange="chooseReceivedEVSE(this.value)"><option value="">กรอก EVSE UID เอง</option></select></label><label>Connector ID ใน EVSE<select id="receivedConnectorSelect" onchange="chooseReceivedConnector(this.value)"><option value="">กรอก Connector ID เอง</option></select></label></div>
+              <p id="receivedLocationNote" class="hint"></p>
+            </div>
+            <div class="grid2"><label>Location ID<input id="locationID" placeholder="from Locations"></label><label>EVSE UID<input id="evseUID" placeholder="from Location.evses"></label></div>
+            <label>Connector ID<input id="connectorID" placeholder="optional unless required"></label>
+            <button onclick="startSession()">Request charging start</button>
+            <p class="hint warning">ACCEPTED ตรงนี้หมายถึง CPO ส่งคำสั่งต่อได้ ยังไม่ใช่หลักฐานว่า charger เริ่มแล้ว ต้องรอ async result + Session</p>
+          </div>
+        </article>
+
+        <article class="step" data-step="7">
+          <div class="step-head"><span class="number">07</span><div><h3>Observe & stop</h3><p>Session ACTIVE → COMPLETED</p></div><span class="step-state">WAIT</span></div>
+          <div class="step-body"><div class="row"><button class="secondary" onclick="pull('sessions')">Refresh charging sessions</button><select id="sessionID"><option value="">Choose Session</option></select></div><button onclick="stopSession()">Request charging stop</button></div>
+        </article>
+
+        <article class="step" data-step="8">
+          <div class="step-head"><span class="number">08</span><div><h3>Verify final CDR</h3><p>Immutable billing object</p></div><span class="step-state">WAIT</span></div>
+          <div class="step-body"><p class="hint">รอ Evolt ส่งรายการค่าใช้จ่ายหลัง Session จบ แล้วตรวจยอด พลังงาน และช่วงเวลา</p><button onclick="pull('cdrs')">Refresh billing records</button></div>
+        </article>
+        </div>
+
+      </section>
+
+      <section class="observatory">
+        <div class="panel trace-panel" data-workspace-panel="activity" hidden>
+          <div class="panel-title"><div><span class="eyebrow">ACTIVITY</span><h2>Request history</h2></div><div class="history-actions"><span class="history-legend"><i class="legend-ok"></i>HTTP ผ่าน <i class="legend-error"></i>HTTP Error</span><button class="icon-button" title="Refresh" onclick="refresh()">↻</button></div></div>
+          <div id="timeline" class="timeline"><div class="empty">No traffic yet</div></div>
+        </div>
+
+        <div class="panel db-panel" data-workspace-panel="data" hidden>
+          <div class="panel-title"><div><span class="eyebrow">PARTNER TEST DATA</span><h2>Saved test records</h2><small class="db-note">ข้อมูลจริงจาก Partner PostgreSQL · กด tab เพื่อดูรายละเอียดทางเทคนิค</small></div><div class="partner-db-actions"><button id="dbSecretBaseline" class="ghost" type="button" onclick="saveSecretBaseline()" hidden>จำค่า Before Rotate</button><button id="dbSecretToggle" class="ghost" type="button" onclick="toggleSecrets()" hidden>Show secrets</button><span class="live-dot">LIVE</span></div></div>
+          <div class="record-tools"><label><span>ค้นหา</span><input id="dbSearch" type="search" placeholder="Search saved records" oninput="setDBQuery(this.value)"></label><label><span>เรียงลำดับ</span><select id="dbSort" onchange="setDBSort(this.value)"><option value="latest">อัปเดตล่าสุดก่อน</option><option value="oldest">เก่าสุดก่อน</option><option value="name">ชื่อตาม A–Z</option></select></label></div>
+          <div id="dbTabs" class="tabs"></div>
+          <div id="dbContent" class="db-content"><div class="empty">No records</div></div>
+        </div>
+      </section>
+    </div>
+  </main>
+  <div id="resetModal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="resetTitle">
+    <div class="modal-card"><span class="eyebrow">DESTRUCTIVE · MOCK SCOPE ONLY</span><h2 id="resetTitle">เริ่ม flow ใหม่ตั้งแต่ศูนย์</h2><p>จะลบ current partner run พร้อม setup, encrypted tokens, endpoints, objects, commands และ HTTP traces แล้วสร้าง run ใหม่ใน PostgreSQL เดิม</p><p class="hint warning">ไม่ drop database/schema และไม่แตะ Evolt หรือฐานอื่น แต่ข้อมูล run ปัจจุบันกู้คืนจาก UI ไม่ได้ ควร Export report ก่อน</p><label>พิมพ์ <strong>RESET</strong> เพื่อยืนยัน<input id="resetConfirmation" autocomplete="off" placeholder="RESET" oninput="syncResetButton()"></label><div class="modal-actions"><button class="ghost" onclick="closeReset()">ยกเลิก</button><button id="confirmReset" class="danger-button" disabled onclick="resetRun()">ล้าง current run</button></div></div>
+  </div>
+  <div id="toast" class="toast"></div>
+  <script src="/emsp.js?v=dual-evse-connectors"></script>
+  <script src="/data-prefill.js?v=20260909-3"></script>
+  <script src="/request-samples.js?v=20260909-4"></script>
+  <script src="/request-editor-view.js?v=20260909-4"></script>
+  <script src="/request-editor-controls.js?v=20260909-3"></script>
+  <script src="/requests.js?v=refresh-queue"></script>
+</body>
+</html>
