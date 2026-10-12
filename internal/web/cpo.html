@@ -1,0 +1,155 @@
+<!doctype html>
+<html lang="th">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>CPO Partner · OCPI Partner Console</title>
+  <script src="/console.js?v=refresh-queue"></script>
+  <link rel="stylesheet" href="/style.css">
+  <link rel="stylesheet" href="/branding.css">
+  <link rel="stylesheet" href="/cpo.css?v=20261006-meter-align-2">
+  <link rel="stylesheet" href="/theme.css?v=20260930-meter-checkbox">
+  <link rel="stylesheet" href="/requests.css?v=20260909-3">
+  <link rel="stylesheet" href="/workspace.css?v=20260917-full-evidence">
+  <link rel="stylesheet" href="/dual.css?v=dual-leg-workspaces">
+</head>
+<body class="qa-friendly outbound-page">
+  <header class="topbar lab-topbar">
+    <div class="brand"><span class="brand-mark">O</span><div><strong>OCPI Partner Console</strong><small>Black-box integration · OCPI 2.2.1</small></div></div>
+    <nav class="lab-nav" aria-label="Partner console"><a href="/emsp"><strong>eMSP Partner</strong><small>จำลอง Partner eMSP</small></a><a class="active" href="/cpo"><strong>CPO Partner</strong><small>จำลอง Partner CPO</small></a><a href="/dual/"><strong>Dual-role Partner</strong><small>CPO + eMSP connection เดียว</small></a></nav>
+    <div class="top-actions lab-actions"><span id="live" class="pill neutral">CONNECTING</span><span id="storageBadge" class="pill neutral">POSTGRESQL</span><span id="runStatus" class="pill">SETUP</span><a class="button ghost compact-action" data-icon="download" href="/api/cpo/export">Export</a><button class="button reset-trigger compact-action" data-icon="reset" onclick="openReset()">Reset</button></div>
+  </header>
+
+  <main class="partner-main">
+    <section class="dual-leg-header" aria-label="Dual-role CPO workspace">
+      <div class="dual-leg-copy"><span class="eyebrow">DUAL-ROLE PARTNER · CPO</span><h1>CPO workspace</h1><p>จัดการ Locations, Tariffs, Sessions และ CDRs ของ Partner; รับ Token และ Commands จาก Evolt แล้วจำลองการชาร์จ</p><span class="dual-leg-route">Partner CPO <b>→</b> Evolt eMSP</span></div>
+      <div class="dual-leg-connection"><small>SHARED CONNECTION</small><strong id="dualLegStatus">กำลังโหลด…</strong><span>Credentials ชุดเดียวสำหรับทั้ง CPO และ eMSP</span><a href="/dual/">จัดการ Connection →</a></div>
+    </section>
+    <section class="partner-hero">
+      <div><span class="eyebrow">OUTBOUND · PARTNER CPO</span><h1>Test Evolt roaming</h1><p class="page-description">เดิน Test flow หรือเตรียมข้อมูล Partner CPO แล้วทดสอบ Evolt eMSP ผ่าน Requests</p></div>
+    </section>
+
+    <section class="qa-next-card" aria-live="polite"><div class="qa-next-icon">→</div><div><span class="qa-next-label">ขั้นตอนแนะนำ</span><h2 id="partnerNextTitle">กำลังตรวจสถานะ…</h2><p id="partnerNextHint">ระบบจะพาไปยังส่วนที่ควรทำต่อ</p></div><button id="partnerNextButton" onclick="goPartnerNext()">เปิดส่วนนี้</button></section>
+
+    <nav class="workspace-nav" aria-label="Outbound workspace">
+      <button class="active" data-workspace-view="flow" onclick="openOutboundFlow()">Test flow</button>
+      <button data-workspace-view="catalogue" onclick="selectWorkspaceView('catalogue')">Partner catalogue</button>
+      <button data-workspace-view="requests" onclick="openInboundRequests()">Requests · Edit &amp; send</button>
+      <button data-workspace-view="activity" onclick="selectWorkspaceView('activity')">Request history</button>
+      <button data-workspace-view="data" onclick="selectWorkspaceView('data');loadPartnerDB()">Partner DB</button>
+      <button data-workspace-view="connection" onclick="selectWorkspaceView('connection')">Connection</button>
+    </nav>
+    <section id="outboundFlow" class="panel" data-workspace-panel="flow"><div class="panel-title"><div><h2>Test Evolt as an eMSP</h2><p>เลือกขั้น → เตรียมข้อมูล → ส่งหรือรอ Evolt → ตรวจหลักฐาน · ตั้ง Auto Command Flow ได้ใน Sessions</p></div></div><div class="outbound-wizard"><nav id="outboundFlowSteps" aria-label="Outbound steps"></nav><div id="outboundFlowBody"></div></div></section>
+    <div id="requestEditorMount"></div>
+
+    <details class="flow-guide" data-workspace-panel="connection" hidden>
+      <summary>ดูภาพรวม Outbound flow</summary>
+      <section class="flow-strip" aria-label="OCPI CPO flow">
+        <div><span>01</span><strong>Credentials</strong><small>discover + register</small></div><i>→</i>
+        <div><span>02</span><strong>Catalogue</strong><small>locations + tariffs</small></div><i>→</i>
+        <div><span>03</span><strong>Evolt pulls</strong><small>sender GET + pagination</small></div><i>→</i>
+        <div><span>04</span><strong>Token / Command</strong><small>CPO receiver</small></div><i>→</i>
+        <div><span>05</span><strong>Session / CDR</strong><small>push back to Evolt</small></div>
+      </section>
+    </details>
+
+    <details id="connectionPanel" class="panel connection-panel" data-workspace-panel="connection" hidden open>
+      <summary class="panel-title"><div><span class="eyebrow">01 · CONNECTION</span><h2>Discover & Credentials</h2></div><span id="connectionState" class="live-dot">CHECKING</span></summary>
+      <div class="connection-grid">
+        <label>Evolt Versions URL<input id="versionsURL" placeholder="https://…/api/ocpi/versions"></label>
+        <label>Token A<input id="tokenA" type="password" placeholder="leave blank to keep current value"></label>
+        <label>Partner public URL<input id="publicURL" placeholder="https://…trycloudflare.com"></label>
+        <details class="advanced-settings"><summary>Advanced settings <span>Identity, compatibility และ registration tools</span></summary><div class="advanced-body"><div class="identity-grid"><label>Country<input id="countryCode" maxlength="2"></label><label>Party ID<input id="partyID" maxlength="3"></label><label>Business<input id="businessName"></label></div><label class="compat"><input id="rawCompat" type="checkbox"> Raw-token compatibility <small>ใช้เฉพาะ peer เก่าที่ไม่ Base64 ตาม §4.1.2</small></label><div class="registration-choice"><div><strong>ให้ Evolt เป็นฝ่ายเริ่ม registration</strong><small>สร้าง Token A แล้วนำ Token กับ Versions URL ไปใส่ใน Evolt Console เอง · path ที่ถูกต้องของ Partner Console คือ <code>/ocpi/cpo/versions</code></small></div><button class="ghost" onclick="generateInitialToken()">Generate Token A</button><div id="initialTokenPanel" class="one-time-secret hidden"><small>แสดงครั้งเดียว · copy ไปใส่ Evolt Console</small><code id="initialTokenValue"></code><code id="initialVersionsURL"></code><button class="ghost" onclick="copyInitialRegistration()">Copy setup</button></div></div></div></details>
+        <div class="action-row connection-actions"><button class="ghost" onclick="saveConfig()">Save connection</button><button onclick="discover()">Check connection</button><button onclick="registerPartner()">Connect partner</button><button class="ghost" onclick="credentialsAction('get')">Check credentials (GET)</button><button class="ghost" onclick="credentialsAction('rotate')">Rotate from Partner → Evolt</button><button class="danger-outline" onclick="credentialsAction('unregister')">Disconnect</button></div>
+      </div>
+      <div id="endpointReadiness" class="readiness"></div>
+      <details class="technical-evidence"><summary>View discovered OCPI endpoints</summary><div id="endpointTable" class="endpoint-table"><div class="empty">Check connection to see Evolt endpoints</div></div></details>
+    </details>
+
+    <section class="panel qa-tokens-panel" data-workspace-panel="connection" hidden>
+      <div class="panel-title"><div><span class="eyebrow">QA</span><h2>Tokens สำหรับยิงเอง</h2><p>copy ไปใช้กับ Postman หรือ curl ได้เลย ไม่ต้อง decrypt จาก DB</p></div><button class="ghost" onclick="revealQATokens()">Show tokens</button></div>
+      <div class="qa-tokens"><p class="hint">อ่านจาก connection ปัจจุบัน · เปิดได้เฉพาะเครื่องที่รัน mock (public tunnel ตอบ 404 ให้ /api/*)</p><div id="qaTokenList"></div></div>
+    </section>
+
+    <section class="metrics partner-metrics" data-workspace-panel="catalogue" hidden>
+      <div><small>LOCATIONS</small><strong id="metricLocations">0</strong></div>
+      <div><small>TARIFFS</small><strong id="metricTariffs">0</strong></div>
+      <div><small>SESSIONS</small><strong id="metricSessions">0</strong></div>
+      <div><small>CDRS</small><strong id="metricCdrs">0</strong></div>
+      <div><small>RECEIVED TOKENS</small><strong id="metricTokens">0</strong></div>
+      <div><small>COMMANDS</small><strong id="metricCommands">0</strong></div>
+    </section>
+
+    <section id="objectWorkspace" class="object-workspace" data-workspace-panel="catalogue" hidden>
+      <div class="panel object-panel">
+        <div class="module-tabs">
+          <button data-module="locations" class="active" onclick="selectModule('locations')">Locations</button>
+          <button data-module="tariffs" onclick="selectModule('tariffs')">Tariffs</button>
+          <button data-module="sessions" onclick="selectModule('sessions')">Sessions</button>
+          <button data-module="cdrs" onclick="selectModule('cdrs')">CDRs</button>
+          <button data-module="tokens" onclick="selectModule('tokens')">Tokens</button>
+          <button data-module="commands" onclick="selectModule('commands')">Commands</button>
+        </div>
+
+        <div id="objectsView">
+          <div class="object-toolbar"><div><span class="eyebrow">02 · TEST DATA</span><h2 id="moduleTitle">Locations</h2><small id="moduleHint">สถานี, EVSE และหัวชาร์จ</small></div><div id="datasetActions" class="action-row"><button class="ghost" title="โหลดรายการล่าสุดจาก PostgreSQL" onclick="refresh()">Refresh</button><button class="ghost" onclick="loadSeeds()">Load Sample Data</button><button id="addObjectButton" onclick="newObject()">+ New location</button><button id="sendAllButton" class="ghost" onclick="sendAll()">Send all locations</button></div></div>
+          <div class="object-search"><span>⌕</span><input id="objectSearch" type="search" placeholder="Search this list" oninput="setObjectQuery(this.value)"></div>
+          <div class="object-filters"><label>Delivery<select id="objectDelivery" onchange="setObjectDelivery(this.value)"><option value="all">All statuses</option><option value="NOT_SENT">Not sent</option><option value="SENT">Sent</option><option value="FAILED">Failed</option><option value="CHANGED_AFTER_SEND">Changed after send</option><option value="RECEIVED">Received</option><option value="PULLED">Pulled from Evolt</option><option value="INVALIDATED_BY_PULL">Missing in last pull</option></select></label><label id="objectFavoriteFilter" hidden>Favorite<select id="objectFavorite" onchange="setObjectFavorite(this.value)"><option value="all">All tokens</option><option value="only">★ Favorites only</option><option value="none">☆ Not saved</option></select></label><label>Sort by<select id="objectSort" onchange="setObjectSort(this.value)"><option value="latest">Latest updated</option><option value="name">Name A–Z</option><option value="oldest">Oldest updated</option></select></label></div>
+          <div id="helperPanel" class="helper-panel"></div>
+          <div id="objectList" class="object-list"></div>
+        </div>
+
+      </div>
+
+      <aside id="editorPanel" class="panel editor-panel">
+        <div class="panel-title"><div><span class="eyebrow">OBJECT EDITOR</span><h2 id="editorTitle">Select an object</h2></div><span id="deliveryBadge" class="pill neutral">—</span></div>
+        <div id="editorRecordMeta" class="editor-record-meta" hidden></div>
+        <div id="editorTabs" class="editor-tabs" hidden><button id="draftTabButton" type="button" onclick="setEditorTab('draft')">สร้าง draft</button><button id="automationTabButton" type="button" onclick="setEditorTab('automation')">Auto Command Flow</button><button id="editTabButton" type="button" class="active" onclick="setEditorTab('edit')">แก้ไขข้อมูล</button></div>
+        <div id="draftPane" class="draft-pane" hidden></div>
+        <div id="automationPane" class="draft-pane" hidden></div>
+        <div id="editorEmpty" class="empty">เลือกรายการทางซ้าย หรือสร้างรายการใหม่</div>
+        <div id="editorBody" class="hidden">
+          <div id="editorMode" class="editor-mode"><button id="formModeButton" class="active" onclick="setEditorMode('form')">Form</button><button id="jsonModeButton" onclick="setEditorMode('json')">Raw JSON</button></div>
+          <p id="draftState" class="draft-state" hidden>Unsaved changes · kept while this page is open</p>
+          <div id="objectPrefillMount"></div>
+          <div id="quickForm" class="quick-form"></div>
+          <textarea id="jsonEditor" class="json-editor hidden" aria-label="OCPI object JSON" oninput="captureEditorDraft()" spellcheck="false"></textarea>
+          <div id="findings" class="findings"></div>
+          <div id="editorActions" class="editor-actions"><button class="ghost" onclick="validateCurrent()">Check data</button><button class="ghost" onclick="saveCurrent()">Save to Partner</button><button class="danger-outline" onclick="deleteCurrent()">Delete draft</button></div>
+          <div id="sendActions" class="send-actions"><button id="sendObjectButton" onclick="previewSend(defaultMethod())">Review &amp; send to Evolt</button><button class="ghost" onclick="previewSend('GET')">Verify from Evolt (GET)</button><button id="rawRequestButton" class="ghost" onclick="openCatalogueRequest()">Edit raw request</button><button id="deleteRemoteButton" class="danger-outline hidden" onclick="previewSend('DELETE')">Delete from Evolt</button></div>
+          <p id="sendActionsNote" class="send-actions-note"><strong>Send</strong> writes the current draft to Evolt. <strong>Verify</strong> reads the saved object back without sending the edited JSON.</p>
+          <div id="lifecyclePane" class="lifecycle-pane" hidden></div>
+        </div>
+      </aside>
+    </section>
+
+    <section class="evidence-grid">
+      <div class="panel trace-panel" data-workspace-panel="activity" hidden>
+        <div class="panel-title"><div><span class="eyebrow">ACTIVITY</span><h2>Request history</h2></div><div class="history-actions"><span class="history-legend"><i class="legend-ok"></i>HTTP ผ่าน <i class="legend-error"></i>HTTP Error</span><button class="icon-button" title="Refresh" onclick="refresh()">↻</button></div></div>
+        <div id="partnerTimeline" class="timeline"><div class="empty">No traffic yet</div></div>
+      </div>
+      <div class="panel db-panel" data-workspace-panel="data" hidden>
+        <div class="panel-title"><div><span class="eyebrow">PARTNER TEST DATA</span><h2>Saved test records</h2><small class="db-note">ข้อมูลจริงจาก Partner PostgreSQL · กด tab เพื่อดูรายละเอียดทางเทคนิค</small></div><div class="partner-db-actions"><button id="partnerDBSecretBaseline" class="ghost" type="button" onclick="savePartnerSecretBaseline()" hidden>จำค่า Before Rotate</button><button id="partnerDBSecretToggle" class="ghost" type="button" onclick="togglePartnerDBSecrets()" hidden>Show secrets</button><span class="live-dot">LIVE</span></div></div>
+        <div class="record-tools"><label><span>ค้นหา</span><input id="partnerDBSearch" type="search" placeholder="Search saved records" oninput="setPartnerDBQuery(this.value)"></label><label><span>เรียงลำดับ</span><select id="partnerDBSort" onchange="setPartnerDBSort(this.value)"><option value="latest">Latest updated</option><option value="oldest">Oldest updated</option><option value="name">ชื่อตาม A–Z</option></select></label></div>
+        <div id="partnerDBTabs" class="tabs"></div>
+        <div id="partnerDBContent" class="db-content"><div class="empty">Loading database…</div></div>
+      </div>
+    </section>
+  </main>
+
+  <div id="previewModal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="previewTitle" onclick="closePreviewFromBackdrop(event)">
+    <div class="modal-card preview-card" tabindex="-1"><span class="eyebrow">REVIEW OCPI REQUEST</span><h2 id="previewTitle">OCPI request</h2><pre id="previewContent"></pre><div class="modal-actions"><button class="ghost" onclick="copyPreviewCurl()">Copy cURL</button><button class="ghost" onclick="closePreview()">Cancel</button><button id="confirmPreviewButton" onclick="confirmSend()">Send to Evolt</button></div></div>
+  </div>
+  <div id="resetModal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="resetTitle">
+    <div class="modal-card reset-card"><span class="eyebrow">RESET OUTBOUND TEST DATA</span><h2 id="resetTitle">ล้างข้อมูลทดสอบ Outbound แล้วเริ่มใหม่</h2><p>ล้างเฉพาะข้อมูลจำลองของ Outbound QA</p><div class="reset-scope"><section><strong>ข้อมูลที่จะถูกล้าง</strong><span>Partner Mock credentials, catalogue, commands และ HTTP traces ของ Outbound QA</span></section><section><strong>ค่าที่ยังคงอยู่</strong><span>การเชื่อมต่อ Credentials และ History ใน API Workspace</span></section></div><label>พิมพ์ <strong>RESET</strong> เพื่อยืนยัน<input id="resetConfirmation" autocomplete="off" placeholder="RESET" oninput="syncResetButton()"></label><div class="modal-actions"><button class="ghost" onclick="closeReset()">ยกเลิก</button><button id="confirmReset" class="danger-button" disabled onclick="resetRun()">ล้างข้อมูลและเริ่มใหม่</button></div></div>
+  </div>
+  <div id="toast" class="toast"></div>
+  <script src="/cpo.js?v=20261007-hidden-refresh"></script>
+  <script src="/data-prefill.js?v=20260909-3"></script>
+  <script src="/request-samples.js?v=20260909-4"></script>
+  <script src="/request-editor-view.js?v=20260909-4"></script>
+  <script src="/request-editor-controls.js?v=20260909-3"></script>
+  <script src="/requests.js?v=refresh-queue"></script>
+  <script src="/cpo-flow.js?v=dual-leg-workspaces"></script>
+</body>
+</html>
