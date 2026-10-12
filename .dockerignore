@@ -1,0 +1,20 @@
+# Secrets — inject at runtime via k8s env / Vault, never bake into the image.
+.env
+*.env
+config/secret.env
+
+# Not needed by the Go build.
+.git/
+.gitignore
+*.md
+scripts/
+docker-compose*.yml
+Dockerfile*
+.dockerignore
+.claude/
+.idea/
+.vscode/
+.DS_Store
+bin/
+*.test
+*.out
