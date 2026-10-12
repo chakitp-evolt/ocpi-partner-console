@@ -187,16 +187,6 @@ CREATE TABLE IF NOT EXISTS cpo_exchanges (
 );
 CREATE INDEX IF NOT EXISTS idx_cpo_exchanges_created ON cpo_exchanges(connection_id, created_at DESC);
 
-CREATE TABLE IF NOT EXISTS cpo_favorite_tokens (
-  record_id text PRIMARY KEY,
-  label text NOT NULL DEFAULT '',
-  token jsonb NOT NULL,
-  location_id text NOT NULL DEFAULT '',
-  evse_uid text NOT NULL DEFAULT '',
-  connector_id text NOT NULL DEFAULT '',
-  created_at timestamptz NOT NULL DEFAULT now()
-);
-
 -- ============================================================
 -- Saved requests (Requests panel on /emsp, /cpo, /dual)
 -- ============================================================

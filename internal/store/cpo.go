@@ -253,7 +253,6 @@ func (s *Store) CPOTables(ctx context.Context, runID string, revealSecrets bool)
 		"tokens":    `SELECT COALESCE(jsonb_agg(to_jsonb(x)), '[]'::jsonb) FROM (SELECT object_id,body,delivery,findings,updated_at FROM cpo_objects WHERE connection_id=$1 AND module='tokens' ORDER BY updated_at DESC) x`,
 		"commands":  `SELECT COALESCE(jsonb_agg(to_jsonb(x)), '[]'::jsonb) FROM (SELECT id,type,status,request,response_url,result,created_at,updated_at FROM cpo_commands WHERE connection_id=$1 ORDER BY created_at DESC) x`,
 		"exchanges": `SELECT COALESCE(jsonb_agg(payload ORDER BY created_at DESC), '[]'::jsonb) FROM cpo_exchanges WHERE connection_id=$1`,
-		"favorites": `SELECT COALESCE(jsonb_agg(to_jsonb(x)), '[]'::jsonb) FROM (SELECT record_id,label,token,location_id,evse_uid,connector_id,created_at FROM cpo_favorite_tokens WHERE $1::text IS NOT NULL ORDER BY record_id) x`,
 	}
 	result := make(map[string]json.RawMessage, len(queries)+1)
 	for name, query := range queries {
@@ -339,51 +338,4 @@ func (s *Store) decryptCPOSecret(runID, key, encoded string) (string, error) {
 	nonce, payload := ciphertext[:s.aead.NonceSize()], ciphertext[s.aead.NonceSize():]
 	plain, err := s.aead.Open(nil, nonce, payload, []byte("cpo:"+runID+":"+key))
 	return string(plain), err
-}
-
-type FavoriteToken struct {
-	ID          string
-	Label       string
-	Token       map[string]any
-	LocationID  string
-	EVSEUID     string
-	ConnectorID string
-	CreatedAt   string
-}
-
-func (s *Store) FavoriteTokens(ctx context.Context) ([]FavoriteToken, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT record_id,label,token,location_id,evse_uid,connector_id,created_at::text FROM cpo_favorite_tokens ORDER BY record_id`)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var result []FavoriteToken
-	for rows.Next() {
-		var item FavoriteToken
-		var token []byte
-		if err := rows.Scan(&item.ID, &item.Label, &token, &item.LocationID, &item.EVSEUID, &item.ConnectorID, &item.CreatedAt); err != nil {
-			return nil, err
-		}
-		if err := json.Unmarshal(token, &item.Token); err != nil {
-			return nil, err
-		}
-		result = append(result, item)
-	}
-	return result, rows.Err()
-}
-
-func (s *Store) SaveFavoriteToken(ctx context.Context, favorite FavoriteToken) error {
-	token, err := json.Marshal(favorite.Token)
-	if err != nil {
-		return err
-	}
-	_, err = s.db.ExecContext(ctx, `INSERT INTO cpo_favorite_tokens(record_id,label,token,location_id,evse_uid,connector_id) VALUES($1,$2,$3,$4,$5,$6)
-    ON CONFLICT(record_id) DO UPDATE SET label=excluded.label,token=excluded.token,location_id=excluded.location_id,evse_uid=excluded.evse_uid,connector_id=excluded.connector_id`,
-		favorite.ID, favorite.Label, token, favorite.LocationID, favorite.EVSEUID, favorite.ConnectorID)
-	return err
-}
-
-func (s *Store) DeleteFavoriteToken(ctx context.Context, recordID string) error {
-	_, err := s.db.ExecContext(ctx, `DELETE FROM cpo_favorite_tokens WHERE record_id=$1`, recordID)
-	return err
 }

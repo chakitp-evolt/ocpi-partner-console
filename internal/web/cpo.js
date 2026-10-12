@@ -3,7 +3,7 @@ let activeModule='locations',selectedID='',editorMode='form',pendingPreview=null
 let activeDBTable='setup';
 let partnerDBQuery='',partnerDBSort='latest';
 let partnerDBSecretsVisible=false;
-let objectDelivery='all',objectSort='latest',objectFavorite='all';
+let objectDelivery='all',objectSort='latest';
 let editorTab='edit';
 const editorDrafts=new Map(),newDrafts=new Map();
 const meterManualTargets=new Map();
@@ -11,7 +11,7 @@ const meterControl={autoMode:false,rate:'7.2',run:null,timer:null,busy:false};
 const parkingPreview={sessionID:'',data:null,lastFetch:0,pending:false};
 function draftKey(){return `${activeModule}/${selectedID}`}
 function captureEditorDraft(){const record=currentRecord();if(!record||['tokens','commands'].includes(activeModule)||(activeModule==='cdrs'&&(record.delivery==='SENT'||record.body.credit===true)))return;editorDrafts.set(draftKey(),document.getElementById('jsonEditor').value);document.getElementById('draftState').hidden=false}
-const dbTables=['setup','secrets','endpoints','locations','tariffs','sessions','cdrs','tokens','favorites','commands','exchanges'];
+const dbTables=['setup','secrets','endpoints','locations','tariffs','sessions','cdrs','tokens','commands','exchanges'];
 const moduleMeta={locations:['Locations','สถานี, EVSE และหัวชาร์จ'],tariffs:['Tariffs','อัตราค่าบริการ'],sessions:['Sessions','สถานะการชาร์จ'],cdrs:['CDRs','ข้อมูลค่าใช้จ่ายหลังจบการชาร์จ'],tokens:['Tokens','Token ที่รับหรือดึงจาก Evolt'],commands:['Commands','คำสั่งที่ Evolt ส่งเข้ามา']};
 const moduleActions={locations:['+ New location','Send all locations'],tariffs:['+ New tariff','Send all tariffs'],sessions:['+ New session','Send all sessions'],cdrs:['+ New CDR','Send all CDRs']};
 function deliveryText(value){return ({NOT_SENT:'Not sent',SENT:'Sent',FAILED:'Failed',CHANGED_AFTER_SEND:'Edited since send',RECEIVED:'Received',ACCEPTED:'Accepted'})[value]||value}
@@ -58,10 +58,9 @@ async function resetRun(){if(document.getElementById('resetConfirmation').value!
 async function loadSeeds(){try{await api('/api/cpo/seeds',{method:'POST',body:'{}'});toast('Sample dataset loaded');await refresh()}catch(error){toast(error.message,true)}}
 async function pullTokens(){try{const result=await api('/api/cpo/actions/pull-tokens',{method:'POST',body:'{}'});toast(`Pulled ${result.pulled} Token(s) from Evolt${result.invalidated?` · invalidated ${result.invalidated} stale`:''}`);await refresh()}catch(error){toast(error.message,true);await refresh()}}
 
-function selectModule(module){activeModule=module;selectedID='';objectQuery='';objectDelivery='all';objectFavorite='all';editorTab=module==='sessions'&&!(state.objects.sessions||[]).length?'draft':'edit';document.getElementById('objectDelivery').value='all';document.getElementById('objectFavorite').value='all';const search=document.getElementById('objectSearch');if(search)search.value='';document.querySelectorAll('.module-tabs button').forEach(button=>{button.classList.toggle('active',button.dataset.module===module);button.setAttribute('aria-pressed',String(button.dataset.module===module))});renderObjects();renderEditor()}
+function selectModule(module){activeModule=module;selectedID='';objectQuery='';objectDelivery='all';editorTab=module==='sessions'&&!(state.objects.sessions||[]).length?'draft':'edit';document.getElementById('objectDelivery').value='all';const search=document.getElementById('objectSearch');if(search)search.value='';document.querySelectorAll('.module-tabs button').forEach(button=>{button.classList.toggle('active',button.dataset.module===module);button.setAttribute('aria-pressed',String(button.dataset.module===module))});renderObjects();renderEditor()}
 function setObjectQuery(query){objectQuery=query.trim().toLowerCase();renderObjects()}
 function setObjectDelivery(value){objectDelivery=value;renderObjects()}
-function setObjectFavorite(value){objectFavorite=value;renderObjects()}
 function setObjectSort(value){objectSort=value;renderObjects()}
 function selectObject(id){if(activeModule==='sessions'&&meterControl.run?.sessionID!==id)stopAutoMeter();selectedID=id;renderObjects();renderEditor()}
 function currentRecord(){if(activeModule==='commands'){const command=(state.commands||[]).find(record=>record.id===selectedID);return command?{id:command.id,body:command,delivery:command.status,findings:[]}:null}return (state.objects?.[activeModule]||[]).find(record=>record.id===selectedID)}
@@ -78,34 +77,16 @@ function renderObjects(){
   const allRows=activeModule==='commands'?(state.commands||[]).map(command=>({id:command.id,body:command,delivery:command.status})):state.objects?.[activeModule]||[];
   if(allRows.length&&!allRows.some(record=>record.id===selectedID))selectedID=allRows[0].id;
   const stamp=record=>Date.parse(record.updated_at||record.body?.last_updated||record.body?.updated_at||record.body?.created_at||record.created_at)||0;
-  document.getElementById('objectFavoriteFilter').hidden=activeModule!=='tokens';
-  const rows=allRows.filter(record=>(objectDelivery==='all'||record.delivery===objectDelivery)&&favoriteFilterMatches(record)&&(!objectQuery||`${record.id} ${JSON.stringify(record.body)}`.toLowerCase().includes(objectQuery))).sort((a,b)=>objectSort==='name'?String(a.body.name||a.id).localeCompare(String(b.body.name||b.id)):objectSort==='oldest'?stamp(a)-stamp(b):stamp(b)-stamp(a)),root=document.getElementById('objectList');
+  const rows=allRows.filter(record=>(objectDelivery==='all'||record.delivery===objectDelivery)&&(!objectQuery||`${record.id} ${JSON.stringify(record.body)}`.toLowerCase().includes(objectQuery))).sort((a,b)=>objectSort==='name'?String(a.body.name||a.id).localeCompare(String(b.body.name||b.id)):objectSort==='oldest'?stamp(a)-stamp(b):stamp(b)-stamp(a)),root=document.getElementById('objectList');
   document.querySelectorAll('[data-module-count]').forEach(el=>el.textContent=el.dataset.moduleCount==='commands'?(state.commands||[]).length:(state.objects?.[el.dataset.moduleCount]||[]).length);
-  root.innerHTML=rows.length?rows.map(record=>objectRowHTML(record)).join(''):`<div class="empty">${objectQuery||objectDelivery!=='all'||objectFavorite!=='all'?'ไม่พบรายการที่ตรงกับตัวกรอง':activeModule==='tokens'?'ยังไม่มี Token — ให้ Evolt Push เข้ามา หรือกด Load tokens from Evolt':readOnly?'ยังไม่มีข้อมูลที่ Evolt ส่งเข้ามา':'ยังไม่มีข้อมูล — สร้างรายการใหม่หรือโหลด Sample data'}</div>`;
+  root.innerHTML=rows.length?rows.map(record=>objectRowHTML(record)).join(''):`<div class="empty">${objectQuery||objectDelivery!=='all'?'ไม่พบรายการที่ตรงกับตัวกรอง':activeModule==='tokens'?'ยังไม่มี Token — ให้ Evolt Push เข้ามา หรือกด Load tokens from Evolt':readOnly?'ยังไม่มีข้อมูลที่ Evolt ส่งเข้ามา':'ยังไม่มีข้อมูล — สร้างรายการใหม่หรือโหลด Sample data'}</div>`;
   root.querySelectorAll('[data-record-id]').forEach(button=>button.addEventListener('click',()=>selectObject(button.dataset.recordId)));
-  root.querySelectorAll('[data-favorite-id]').forEach(button=>button.addEventListener('click',()=>toggleFavorite(button.dataset.favoriteId)));
   renderHelpers()
 }
 function objectRowHTML(record){
   const stage=recordStage(record);
   const row=`<button type="button" class="object-row ${record.id===selectedID?'selected':''} ${stage?'needs-action':''}" data-record-id="${attr(record.id)}" ${stage?`data-stage="${stage.kind}"`:""} aria-pressed="${record.id===selectedID}"><span class="object-row-content"><strong>${esc(record.body.name||record.id)}</strong>${record.body.name?`<small class="record-id">${esc(record.id)}</small>`:''}<small>${summary(record.body)}</small>${recordTimesHTML(record)}${stage?`<small class="session-stage" data-stage="${stage.kind}">${esc(stage.label)}</small>`:''}</span><span class="delivery ${esc(record.delivery)}" title="${esc(record.delivery)}">${esc(deliveryText(record.delivery))}</span></button>`;
-  if(activeModule!=='tokens')return row;
-  const starred=isFavorite(record.id);
-  return `<div class="object-row-shell">${row}<button type="button" class="fav-star ${starred?'on':''}" data-favorite-id="${attr(record.id)}" aria-pressed="${starred}" title="${starred?'เอาออกจาก favorite driver':'เก็บเป็น favorite driver'}">${starred?'★':'☆'}</button></div>`;
-}
-function favorites(){return state.favorites||[]}
-function favoriteFilterMatches(record){if(activeModule!=='tokens'||objectFavorite==='all')return true;return isFavorite(record.id)===(objectFavorite==='only')}
-function isFavorite(id){return favorites().some(item=>item.id===id)}
-function favoriteLabel(item){return `${item.token?.uid||item.id} · ${item.token?.contract_id||'ไม่มี contract'} · ${item.token?.type||'RFID'}`}
-// The Tokens record id spans several path segments (country/party/uid/type), so each one is escaped
-// on its own — encodeURIComponent on the whole id would turn the separators into %2F.
-function favoritePath(id){return '/api/cpo/favorites/'+String(id).split('/').map(encodeURIComponent).join('/')}
-async function toggleFavorite(id){
-  try{
-    if(isFavorite(id)){await api(favoritePath(id),{method:'DELETE'});toast('เอาออกจาก favorite driver แล้ว')}
-    else{await api(favoritePath(id),{method:'PUT',body:JSON.stringify({})});toast('เก็บเป็น favorite driver แล้ว')}
-    await refresh();
-  }catch(error){toast(error.message,true)}
+  return row;
 }
 function summary(body){if(activeModule==='locations')return `${esc(body.name||'Unnamed')} · ${(body.evses||[]).length} EVSE`;if(activeModule==='tariffs')return `${esc(body.currency||'')} · ${(body.elements||[]).length} element`;if(activeModule==='sessions')return `${esc(body.status||'')} · ${body.kwh??0} kWh`;if(activeModule==='cdrs')return `${body.credit===true?'Credit CDR · ':''}${body.total_energy??0} kWh · ${body.total_time??0} h${body.session_id?` · Session ${esc(body.session_id)}`:''}${body.credit_reference_id?` · credits ${esc(body.credit_reference_id)}`:''}`;if(activeModule==='tokens')return `${esc(body.uid||'')} · ${esc(body.type||'RFID')} · ${body.valid?'valid':'invalid'}`;const sessionID=body.request?.session_id||body.result?.session_id;return `${esc(body.type||'')} · callback ${esc(body.status||'WAITING')}${sessionID?` · Session ${esc(sessionID)}`:''}`}
 function partnerTime(value){const timestamp=Date.parse(value||'');return Number.isFinite(timestamp)?new Date(timestamp).toLocaleString('en-GB',{timeZone:'Asia/Bangkok',day:'2-digit',month:'2-digit',year:'numeric',hour:'2-digit',minute:'2-digit',second:'2-digit',hourCycle:'h23'}):'—'}
@@ -191,13 +172,9 @@ function renderHelpers(){
     const fromCommand=startCommands.length
       ?`<div class="helper-alt"><span>หรือสร้างจาก START_SESSION ที่ Evolt ส่งมา — ดึง token / location / EVSE จาก command นั้น</span><div class="helper-grid"><select id="helperCommand" aria-label="START_SESSION command" onchange="fillCommandConnectorOptions()">${startCommands.map(x=>`<option value="${esc(x.id)}">${esc(String(x.id).slice(0,8))} · ${esc(partnerTime(x.created_at))} UTC+7 · ${esc(x.request?.location_id||'?')}/${esc(x.request?.evse_uid||'?')}/${esc(x.request?.connector_id||'?')} · ${esc(x.request?.token?.uid||'no token')}</option>`).join('')}</select><select id="helperCommandConnector" aria-label="Connector for this command"></select><button id="createFromCommandButton" onclick="createSessionFromCommand()">${meterControl.autoMode?'Create, send & start':'Create draft from command'}</button></div><p class="hint" id="helperCommandHint"></p></div>`
       :`<div class="helper-alt"><span>ยังไม่มี START_SESSION จาก Evolt — ใช้การเลือกเองด้านบน</span></div>`;
-    const list=favorites();
-    const favoriteRow=list.length
-      ?`<div class="helper-alt fav-pick"><label class="fav-switch" for="helperUseFavorite"><span><strong>ใช้ favorite driver</strong><small>ปิดอยู่ = ใช้ DEMO-RFID-001 ตามค่าเริ่มต้น</small></span><input type="checkbox" id="helperUseFavorite" onchange="toggleFavoritePicker()"></label><div class="fav-pick-body" id="helperFavoriteRow" hidden><select id="helperFavorite" aria-label="Favorite driver" onchange="applyFavoritePrefill()">${list.map(item=>`<option value="${attr(item.id)}">${esc(favoriteLabel(item))}</option>`).join('')}</select><p class="fav-pick-hint" id="helperFavoriteHint"></p></div></div>`
-      :`<div class="helper-alt"><span>ยังไม่มี favorite driver — กดดาว ☆ ข้าง Token ในแท็บ Tokens เพื่อเก็บไว้ใช้ตอนสร้าง Session draft</span></div>`;
     const createLabel=meterControl.autoMode?'Create, send & start':'Create draft';
     const precreateMeter=`<div class="meter-card"><div class="lifecycle-head"><strong>วงจร Session</strong><span>ก่อนสร้าง Session</span></div><label class="meter-mode"><input type="checkbox" ${meterControl.autoMode?'checked':''} onchange="setAutoMeterMode(this.checked)"> ให้ meter วิ่งอัตโนมัติหลังสร้าง Session</label><div class="meter-controls"><label>อัตราการไหล (kWh/ชั่วโมง)<input id="meterDraftRate" type="number" min="0.001" step="any" value="${attr(meterControl.rate)}" oninput="meterControl.rate=this.value" ${!meterControl.autoMode?'disabled':''}></label></div><p class="meter-hint">เมื่อเปิดโหมด Create จะส่ง initial PUT ไป Evolt แล้วเริ่ม meter; ทุก 15 วินาทีจึงส่ง Session PATCH ขณะเปิดหน้านี้ไว้ ถ้าปิดไว้จะเป็น draft ให้ส่งและกรอกค่าเองเหมือนเดิม</p></div>`;
-    document.getElementById('draftPane').innerHTML=`<div class="helper-card"><div class="helper-heading"><h3>Create session draft</h3><span>STEP 1</span></div><div class="helper-grid"><select id="helperLocation" aria-label="Location" onchange="fillConnectorOptions()">${locations.map(x=>`<option>${esc(x.id)}</option>`).join('')}</select><select id="helperEVSE" aria-label="EVSE"></select><select id="helperConnector" aria-label="Connector"></select></div>${favoriteRow}${precreateMeter}<div class="action-row"><button id="createSessionButton" onclick="createSession()">${createLabel}</button></div>${fromCommand}</div>`;
+    document.getElementById('draftPane').innerHTML=`<div class="helper-card"><div class="helper-heading"><h3>Create session draft</h3><span>STEP 1</span></div><div class="helper-grid"><select id="helperLocation" aria-label="Location" onchange="fillConnectorOptions()">${locations.map(x=>`<option>${esc(x.id)}</option>`).join('')}</select><select id="helperEVSE" aria-label="EVSE"></select><select id="helperConnector" aria-label="Connector"></select></div>${precreateMeter}<div class="action-row"><button id="createSessionButton" onclick="createSession()">${createLabel}</button></div>${fromCommand}</div>`;
     document.getElementById('lifecyclePane').innerHTML=sessionLifecycleHTML(currentRecord());
     fillConnectorOptions();
     fillCommandConnectorOptions();
@@ -220,12 +197,7 @@ function renderHelpers(){
     return;
   }
   if(activeModule==='tokens'){
-    const list=favorites();
-    const shortlist=list.length
-      ?`<ul class="fav-list">${list.map(item=>`<li><span><strong>${esc(item.label||item.token?.uid||item.id)}</strong><small>${esc(favoriteLabel(item))}${item.location_id?` · ล่าสุด ${esc(item.location_id)}/${esc(item.evse_uid||'?')}/${esc(item.connector_id||'?')}`:''}</small></span><button type="button" class="ghost" data-favorite-id="${attr(item.id)}">Remove</button></li>`).join('')}</ul>`
-      :`<p class="hint">ยังไม่มี favorite driver — กดดาวข้าง Token ในรายการซ้ายเพื่อเก็บไว้ใช้ตอนสร้าง Session draft</p>`;
-    root.innerHTML=`<div class="helper-card"><div class="helper-heading"><h3>Sync tokens from Evolt</h3><span>GET</span></div><button onclick="pullTokens()">Load tokens</button></div><div class="helper-card"><div class="helper-heading"><h3>Favorite drivers</h3><span>${list.length}</span></div>${shortlist}</div>`;
-    root.querySelectorAll('[data-favorite-id]').forEach(button=>button.addEventListener('click',()=>toggleFavorite(button.dataset.favoriteId)));
+    root.innerHTML=`<div class="helper-card"><div class="helper-heading"><h3>Sync tokens from Evolt</h3><span>GET</span></div><button onclick="pullTokens()">Load tokens</button></div>`;
   }
   else root.innerHTML='';
 }
@@ -248,22 +220,6 @@ function fillCommandConnectorOptions(){
     :sent?`Evolt ส่ง connector_id ${sent} มาแล้ว`
     :connectors.length===1?`EVSE นี้มีหัวเดียว (${connectors[0].id}) — เลือกให้อัตโนมัติ`
     :`Evolt ไม่ได้ส่ง connector_id มา — เลือกหัวที่จะใช้เอง`;
-}
-function toggleFavoritePicker(){const row=document.getElementById('helperFavoriteRow');if(!row)return;row.hidden=!document.getElementById('helperUseFavorite').checked;if(!row.hidden)applyFavoritePrefill()}
-function renderFavoriteHint(favorite){const hint=document.getElementById('helperFavoriteHint');if(!hint)return;hint.textContent=favorite?.location_id?`เคยชาร์จล่าสุดที่ ${favorite.location_id} / ${favorite.evse_uid||'?'} / ${favorite.connector_id||'?'} — เติมให้ด้านบนแล้ว`:'ยังไม่เคยใช้ favorite นี้สร้าง draft — เลือก Location/EVSE/Connector ด้านบนเอง'}
-// Picking a favourite also restores the Location/EVSE/Connector it was last drafted against, so a
-// repeat run of the same driver needs one click instead of three dropdowns.
-function applyFavoritePrefill(){
-  const favorite=favorites().find(item=>item.id===value('helperFavorite'));
-  renderFavoriteHint(favorite);
-  if(!favorite||!favorite.location_id)return;
-  const location=document.getElementById('helperLocation');
-  if(!location||![...location.options].some(option=>option.value===favorite.location_id))return;
-  location.value=favorite.location_id;fillConnectorOptions();
-  const evse=document.getElementById('helperEVSE');
-  if(favorite.evse_uid&&[...evse.options].some(option=>option.value===favorite.evse_uid)){evse.value=favorite.evse_uid;evse.onchange()}
-  const connector=document.getElementById('helperConnector');
-  if(favorite.connector_id&&[...connector.options].some(option=>option.value===favorite.connector_id))connector.value=favorite.connector_id;
 }
 
 function renderEditor(){
@@ -314,10 +270,7 @@ async function createCDRCorrection(action,id){try{const result=await api(`/api/c
 
 async function patchEVSEStatus(){try{await api('/api/cpo/actions/evse-status',{method:'POST',body:JSON.stringify({location_id:value('statusLocation'),evse_uid:value('statusEVSE'),status:value('statusValue')})});toast('EVSE status PATCH accepted');await refresh()}catch(error){toast(error.message,true)}}
 async function createSession(){
-  const useFavorite=document.getElementById('helperUseFavorite')?.checked;
-  const input={location_id:value('helperLocation'),evse_uid:value('helperEVSE'),connector_id:value('helperConnector')};
-  if(useFavorite)input.favorite_id=value('helperFavorite');
-  await createSessionDraft(input);
+  await createSessionDraft({location_id:value('helperLocation'),evse_uid:value('helperEVSE'),connector_id:value('helperConnector')});
 }
 async function createSessionFromCommand(){const commandID=value('helperCommand');if(!commandID)return toast('Select a START_SESSION command first',true);await createSessionDraft({command_id:commandID,connector_id:value('helperCommandConnector')})}
 async function createSessionDraft(input){

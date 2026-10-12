@@ -107,7 +107,6 @@ type Controller struct {
 	client           *http.Client
 	defaultPublicURL string
 	state            memoryState
-	favorites        map[string]*FavoriteToken
 	subscribers      map[chan struct{}]struct{}
 	repository       persistence
 	profile          string
@@ -128,7 +127,6 @@ func New(defaultPublicURL string) *Controller {
 	c := &Controller{
 		client:           &http.Client{Timeout: 25 * time.Second, CheckRedirect: func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse }},
 		defaultPublicURL: defaultPublicURL,
-		favorites:        map[string]*FavoriteToken{},
 		subscribers:      map[chan struct{}]struct{}{},
 		autoRuns:         map[string]*autoMeterRun{},
 		idleRuns:         map[string]*autoMeterRun{},
@@ -176,8 +174,6 @@ func (c *Controller) RegisterRoutesWithConnectionHandlers(mux *http.ServeMux, ha
 	mux.HandleFunc("POST /api/cpo/actions/evse-status", c.apiEVSEStatus)
 	mux.HandleFunc("POST /api/cpo/actions/command-result/{id}", c.apiCommandResult)
 	// Tokens are keyed by country/party/uid/type, so the record id spans several path segments.
-	mux.HandleFunc("PUT /api/cpo/favorites/{id...}", c.apiSaveFavorite)
-	mux.HandleFunc("DELETE /api/cpo/favorites/{id...}", c.apiDeleteFavorite)
 
 	protocol := func(name string, fallback http.Handler) http.Handler {
 		if handler := handlers[name]; handler != nil {
@@ -298,9 +294,8 @@ func (c *Controller) apiState(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"run_id": c.state.RunID, "status": c.state.Status, "config": c.state.Config, "endpoints": c.state.Endpoints,
 		"objects": objects, "commands": commandList(c.state.Commands), "exchanges": c.state.Exchanges,
-		"favorites": favoriteList(c.favorites),
-		"secrets":   map[string]any{"evolt_token_a": c.state.TokenA != "", "partner_initial_token_a": c.state.InitialToken != "", "partner_issued_token": c.state.TokenB != "", "evolt_issued_token": c.state.TokenC != ""},
-		"storage":   map[string]any{"mode": storageMode(c.repository), "persistent": c.repository != nil, "reset_on_restart": c.repository == nil, "error": c.persistenceError},
+		"secrets": map[string]any{"evolt_token_a": c.state.TokenA != "", "partner_initial_token_a": c.state.InitialToken != "", "partner_issued_token": c.state.TokenB != "", "evolt_issued_token": c.state.TokenC != ""},
+		"storage": map[string]any{"mode": storageMode(c.repository), "persistent": c.repository != nil, "reset_on_restart": c.repository == nil, "error": c.persistenceError},
 	})
 }
 

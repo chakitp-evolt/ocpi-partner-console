@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"sort"
-	"strings"
 	"time"
 
 	"bitbucket.org/evoltth/evolt-ocpi-partner-console/internal/defaults"
@@ -19,9 +18,6 @@ type persistence interface {
 	SaveCPO(context.Context, store.CPOSnapshot) error
 	CPOTables(context.Context, string, bool) (map[string]json.RawMessage, error)
 	DeleteCPO(context.Context, string) error
-	FavoriteTokens(context.Context) ([]store.FavoriteToken, error)
-	SaveFavoriteToken(context.Context, store.FavoriteToken) error
-	DeleteFavoriteToken(context.Context, string) error
 }
 
 func NewPersistent(repository persistence, defaultPublicURL string) (*Controller, error) {
@@ -38,25 +34,8 @@ func newPersistent(repository persistence, defaultPublicURL, profile string) (*C
 	controller.profile = profile
 	controller.repository = repository
 	controller.startSaver()
-	favorites, err := repository.FavoriteTokens(ctx)
-	if err != nil {
-		return nil, err
-	}
-	for _, item := range favorites {
-		if profile == "dual" {
-			if !strings.HasPrefix(item.ID, "dual:") {
-				continue
-			}
-			item.ID = strings.TrimPrefix(item.ID, "dual:")
-		} else if strings.HasPrefix(item.ID, "dual:") {
-			continue
-		}
-		controller.favorites[item.ID] = &FavoriteToken{
-			ID: item.ID, Label: item.Label, Token: item.Token,
-			LocationID: item.LocationID, EVSEUID: item.EVSEUID, ConnectorID: item.ConnectorID, CreatedAt: item.CreatedAt,
-		}
-	}
 	var snapshot store.CPOSnapshot
+	var err error
 	if loader, ok := repository.(interface {
 		LoadCPOProfile(context.Context, string) (store.CPOSnapshot, error)
 	}); ok {

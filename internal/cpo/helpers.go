@@ -12,7 +12,7 @@ import (
 )
 
 // defaultCdrToken is the walk-up RFID the mock falls back to when a draft is started without a
-// START_SESSION command and without a favourite driver.
+// START_SESSION command.
 func defaultCdrToken() map[string]any {
 	return map[string]any{"country_code": "TH", "party_id": "EVT", "uid": "DEMO-RFID-001", "type": "RFID", "contract_id": "TH-EVT-C00000001"}
 }
@@ -22,7 +22,6 @@ func (c *Controller) apiSessionAction(w http.ResponseWriter, r *http.Request) {
 	var input struct {
 		SessionID   string   `json:"session_id"`
 		CommandID   string   `json:"command_id"`
-		FavoriteID  string   `json:"favorite_id"`
 		LocationID  string   `json:"location_id"`
 		EVSEUID     string   `json:"evse_uid"`
 		ConnectorID string   `json:"connector_id"`
@@ -47,7 +46,6 @@ func (c *Controller) apiSessionAction(w http.ResponseWriter, r *http.Request) {
 	timestamp := now()
 	var response map[string]any
 	var price sessionPrice
-	var touchedFavorite *FavoriteToken
 	switch action {
 	case "create":
 		cdrToken := defaultCdrToken()
@@ -74,14 +72,6 @@ func (c *Controller) apiSessionAction(w http.ResponseWriter, r *http.Request) {
 			if value := fieldText(command.Request, "connector_id"); value != "" {
 				input.ConnectorID = value
 			}
-		} else if input.FavoriteID != "" {
-			favorite := c.favorites[input.FavoriteID]
-			if favorite == nil {
-				c.mu.Unlock()
-				writeError(w, http.StatusNotFound, fmt.Errorf("favourite driver %q not found", input.FavoriteID))
-				return
-			}
-			cdrToken = cdrTokenFromToken(favorite.Token)
 		}
 		location := c.state.Objects["locations"][input.LocationID]
 		if location == nil {
@@ -128,9 +118,6 @@ func (c *Controller) apiSessionAction(w http.ResponseWriter, r *http.Request) {
 			snapshot["tariff"] = cloneMap(tariff)
 		}
 		c.state.Objects["sessions"][input.SessionID] = &Record{Body: body, Snapshot: snapshot, Delivery: "NOT_SENT", Findings: rules.Validate("sessions", body, owner), UpdatedAt: timestamp}
-		if input.FavoriteID != "" {
-			touchedFavorite = c.rememberFavoriteTarget(input.FavoriteID, input.LocationID, input.EVSEUID, input.ConnectorID)
-		}
 		response = body
 	case "advance", "complete", "cdr":
 		record := c.state.Objects["sessions"][input.SessionID]
@@ -249,10 +236,6 @@ func (c *Controller) apiSessionAction(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	c.mu.Unlock()
-	if err := c.persistFavorite(r.Context(), touchedFavorite); err != nil {
-		writeError(w, http.StatusInternalServerError, err)
-		return
-	}
 	c.changed()
 	result := map[string]any{"ok": true, "object": response}
 	if action == "create" {
