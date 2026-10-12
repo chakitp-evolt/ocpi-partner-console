@@ -15,6 +15,8 @@ import (
 type autoMeterRun struct {
 	cancel context.CancelFunc
 	done   chan struct{}
+	// nextSendAt is when the loop sends next, shown as the page's countdown. Guarded by autoMu.
+	nextSendAt time.Time
 }
 
 func (c *Controller) apiAutomation(w http.ResponseWriter, r *http.Request) {
@@ -26,6 +28,7 @@ func (c *Controller) apiAutomation(w http.ResponseWriter, r *http.Request) {
 		// Omitted fields keep their current value, so a client that does not know them changes nothing.
 		ParkingAtUnplugOnly   *bool `json:"parking_at_unplug_only"`
 		PeriodIntervalSeconds *int  `json:"period_interval_seconds"`
+		SendIntervalSeconds   *int  `json:"send_interval_seconds"`
 	}
 	if err := decodeJSON(r, &input); err != nil {
 		writeError(w, http.StatusBadRequest, err)
@@ -43,10 +46,15 @@ func (c *Controller) apiAutomation(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusUnprocessableEntity, fmt.Errorf("period_interval_seconds must be between %d and %d", minPeriodInterval, maxPeriodInterval))
 		return
 	}
+	if input.SendIntervalSeconds != nil && (*input.SendIntervalSeconds < minSendInterval || *input.SendIntervalSeconds > maxSendInterval) {
+		writeError(w, http.StatusUnprocessableEntity, fmt.Errorf("send_interval_seconds must be between %d and %d", minSendInterval, maxSendInterval))
+		return
+	}
 	if !input.TestIdleFee {
 		input.IdleUnplugAfterSeconds = 0
 	}
 	c.mu.Lock()
+	previousEnabled := c.state.Config.AutoCommandFlow
 	c.state.Config.AutoCommandFlow = input.Enabled
 	c.state.Config.TestIdleFee = input.TestIdleFee
 	c.state.Config.IdleUnplugAfterSeconds = input.IdleUnplugAfterSeconds
@@ -57,15 +65,19 @@ func (c *Controller) apiAutomation(w http.ResponseWriter, r *http.Request) {
 	if input.PeriodIntervalSeconds != nil {
 		c.state.Config.PeriodIntervalSeconds = *input.PeriodIntervalSeconds
 	}
+	previousSend := c.state.Config.sendInterval()
+	if input.SendIntervalSeconds != nil {
+		c.state.Config.SendIntervalSeconds = *input.SendIntervalSeconds
+	}
 	config := c.state.Config
 	c.mu.Unlock()
 	c.changed()
-	if input.Enabled {
-		c.resumeAutoRuns()
-	} else {
+	// Restarting the loops makes a new send interval count from now instead of after the pending wait.
+	if (previousEnabled && !input.Enabled) || config.sendInterval() != previousSend {
 		c.stopAllAutoRuns()
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "enabled": input.Enabled, "test_idle_fee": input.TestIdleFee, "idle_unplug_after_seconds": input.IdleUnplugAfterSeconds, "rate_kwh_per_hour": input.Rate, "parking_at_unplug_only": config.ParkingAtUnplugOnly, "period_interval_seconds": config.periodInterval().Seconds()})
+	c.resumeAutoRuns()
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "enabled": input.Enabled, "test_idle_fee": input.TestIdleFee, "idle_unplug_after_seconds": input.IdleUnplugAfterSeconds, "rate_kwh_per_hour": input.Rate, "parking_at_unplug_only": config.ParkingAtUnplugOnly, "period_interval_seconds": config.periodInterval().Seconds(), "send_interval_seconds": config.sendInterval().Seconds()})
 }
 
 func (c *Controller) autoCommand(commandID string) {
@@ -305,13 +317,16 @@ func autoActionResult(w *httptest.ResponseRecorder) (map[string]any, error) {
 }
 
 func (c *Controller) startAutoRun(sessionID string) {
+	c.mu.RLock()
+	next := time.Now().Add(c.state.Config.sendInterval())
+	c.mu.RUnlock()
 	c.autoMu.Lock()
 	if c.autoRuns[sessionID] != nil {
 		c.autoMu.Unlock()
 		return
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	run := &autoMeterRun{cancel: cancel, done: make(chan struct{})}
+	run := &autoMeterRun{cancel: cancel, done: make(chan struct{}), nextSendAt: next}
 	c.autoRuns[sessionID] = run
 	c.autoMu.Unlock()
 	go c.autoMeterLoop(ctx, sessionID, run)
@@ -326,18 +341,44 @@ func (c *Controller) autoMeterLoop(ctx context.Context, sessionID string, run *a
 		}
 		c.autoMu.Unlock()
 	}()
-	ticker := time.NewTicker(autoMeterTickInterval)
-	defer ticker.Stop()
+	// The next send time is set before each PATCH goes out, so the refresh that PATCH triggers already
+	// shows the following countdown.
+	schedule := func() time.Time {
+		c.mu.RLock()
+		next := time.Now().Add(c.state.Config.sendInterval())
+		c.mu.RUnlock()
+		c.autoMu.Lock()
+		run.nextSendAt = next
+		c.autoMu.Unlock()
+		return next
+	}
+	next := run.nextSendAt
 	for {
+		timer := time.NewTimer(time.Until(next))
 		select {
 		case <-ctx.Done():
+			timer.Stop()
 			return
-		case <-ticker.C:
-			if !c.advanceAutoMeter(sessionID, time.Now()) {
+		case at := <-timer.C:
+			next = schedule()
+			if !c.advanceAutoMeter(sessionID, at) {
 				return
 			}
 		}
 	}
+}
+
+// nextSendTimes is when each running loop sends its next Session PATCH, keyed by Session id.
+func (c *Controller) nextSendTimes() map[string]time.Time {
+	c.autoMu.Lock()
+	defer c.autoMu.Unlock()
+	times := make(map[string]time.Time, len(c.autoRuns))
+	for id, run := range c.autoRuns {
+		if !run.nextSendAt.IsZero() {
+			times[id] = run.nextSendAt
+		}
+	}
+	return times
 }
 
 func (c *Controller) autoMeterTarget(sessionID string, at time.Time) (float64, bool) {
@@ -368,11 +409,20 @@ func (c *Controller) autoMeterTarget(sessionID string, at time.Time) (float64, b
 // short, so by default every meter tick reports its period; period_interval_seconds spaces them out (the
 // spec calls one per minute too much for AC and one per 30 minutes too little for DC).
 const (
-	autoMeterTickInterval = 15 * time.Second
-	defaultPeriodInterval = autoMeterTickInterval
-	minPeriodInterval     = 15
+	defaultSendInterval   = 15 * time.Second
+	minSendInterval       = 5
+	maxSendInterval       = 1800
+	defaultPeriodInterval = defaultSendInterval
+	minPeriodInterval     = 5
 	maxPeriodInterval     = 1800
 )
+
+func (config Config) sendInterval() time.Duration {
+	if config.SendIntervalSeconds <= 0 {
+		return defaultSendInterval
+	}
+	return time.Duration(config.SendIntervalSeconds) * time.Second
+}
 
 func (config Config) periodInterval() time.Duration {
 	if config.PeriodIntervalSeconds <= 0 {
@@ -382,10 +432,10 @@ func (config Config) periodInterval() time.Duration {
 }
 
 // periodDue says whether a meter tick at `at` reports Charging Periods. An interval no longer than a tick
-// reports on every tick, so ticker jitter cannot skip one.
+// reports on every tick, so timer jitter cannot skip one.
 func (config Config) periodDue(at, reported time.Time) bool {
 	interval := config.periodInterval()
-	return interval <= autoMeterTickInterval || at.Sub(reported) >= interval
+	return interval <= config.sendInterval() || at.Sub(reported) >= interval
 }
 
 func (c *Controller) advanceAutoMeter(sessionID string, at time.Time) bool {
@@ -472,18 +522,21 @@ func (c *Controller) stopAllAutoRuns() {
 	}
 }
 
+// resumeAutoRuns restarts the meter of Sessions Auto Command Flow started, and the parking updates of every
+// parked Session: a Session stopped by hand reports its parking too, whatever the Auto Command Flow switch.
 func (c *Controller) resumeAutoRuns() {
 	c.mu.RLock()
-	if !c.state.Config.AutoCommandFlow {
-		c.mu.RUnlock()
-		return
-	}
 	var sessions []string
 	for _, command := range c.state.Commands {
-		if command.Type != "START_SESSION" {
+		var id string
+		switch {
+		case command.Type == "START_SESSION" && c.state.Config.AutoCommandFlow:
+			id = fieldText(command.Result, "session_id")
+		case command.Type == "STOP_SESSION" && fieldText(command.Result, "idle_started_at") != "" && fieldText(command.Result, "idle_finished_at") == "":
+			id = fieldText(command.Request, "session_id")
+		default:
 			continue
 		}
-		id := fieldText(command.Result, "session_id")
 		record := c.state.Objects["sessions"][id]
 		if record != nil && fieldText(record.Body, "status") == "ACTIVE" && record.Delivery == "SENT" {
 			sessions = append(sessions, id)

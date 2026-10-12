@@ -497,3 +497,157 @@ func TestParkingCanBeReportedOnlyAtUnplug(t *testing.T) {
 		t.Fatalf("closing PATCH must carry the 20 minutes of parking: %+v", last)
 	}
 }
+
+// A Session stopped by hand with Auto Command Flow off still reports its parking while the car stays
+// plugged in, and comes back after a restart.
+func TestManualStopReportsParkingWithoutAutoCommandFlow(t *testing.T) {
+	c, patches, mu := parkingPeer(t)
+	c.state.Config.AutoCommandFlow = false
+	created, err := c.callSessionAction(t.Context(), "create", map[string]any{"location_id": "BKK-ARI", "evse_uid": "ARI-EVSE-1", "connector_id": "1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := fieldText(created["object"].(map[string]any), "id")
+	if err := c.callSend(t.Context(), "sessions", id, http.MethodPut); err != nil {
+		t.Fatal(err)
+	}
+	c.mu.Lock()
+	c.state.Commands["stop"] = &CommandRecord{ID: "stop", Type: "STOP_SESSION", CreatedAt: now(), Request: map[string]any{"session_id": id}, Result: map[string]any{"result": "ACCEPTED"}}
+	c.mu.Unlock()
+	if _, err := c.callSessionAction(t.Context(), "stop", map[string]any{"session_id": id}); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { c.stopAutoRun(id) })
+	if _, ok := c.nextSendTimes()[id]; !ok {
+		t.Fatal("a manual stop must start the parking updates")
+	}
+	backdateSession(c, id, "stop", 20*time.Minute)
+	mu.Lock()
+	before := len(*patches)
+	mu.Unlock()
+	if !c.advanceParking(id, time.Now()) {
+		t.Fatalf("parking update was not sent with Auto Command Flow off: %+v", c.state.Commands["stop"].Result)
+	}
+	mu.Lock()
+	sent := (*patches)[before:]
+	mu.Unlock()
+	if len(sent) != 1 || sent[0]["total_cost"] == nil {
+		t.Fatalf("parking tick must PATCH total_cost: %+v", sent)
+	}
+
+	c.stopAutoRun(id)
+	c.resumeAutoRuns()
+	if _, ok := c.nextSendTimes()[id]; !ok {
+		t.Fatal("a parked Session must resume its parking updates with Auto Command Flow off")
+	}
+	w := httptest.NewRecorder()
+	c.apiAutomation(w, httptest.NewRequest(http.MethodPut, "/api/cpo/automation", strings.NewReader(`{"enabled":false,"rate_kwh_per_hour":7.2,"send_interval_seconds":5}`)))
+	if w.Code != http.StatusOK {
+		t.Fatalf("changing the send interval failed: %s", w.Body.String())
+	}
+	if remaining := time.Until(c.nextSendTimes()[id]); remaining <= 0 || remaining > 5*time.Second {
+		t.Fatalf("a parked Session must restart with a 5s countdown, got %v", remaining)
+	}
+	previous := c.nextSendTimes()[id]
+	w = httptest.NewRecorder()
+	c.apiAutomation(w, httptest.NewRequest(http.MethodPut, "/api/cpo/automation", strings.NewReader(`{"enabled":false,"rate_kwh_per_hour":7.2,"period_interval_seconds":60}`)))
+	if w.Code != http.StatusOK || c.nextSendTimes()[id] != previous {
+		t.Fatal("saving other settings must preserve the parked Session countdown")
+	}
+	w = httptest.NewRecorder()
+	c.apiState(w, httptest.NewRequest(http.MethodGet, "/api/cpo/state", nil))
+	var state struct {
+		Objects map[string][]struct {
+			ID         string `json:"id"`
+			NextSendAt string `json:"next_send_at"`
+		} `json:"objects"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &state); err != nil {
+		t.Fatal(err)
+	}
+	if len(state.Objects["sessions"]) != 1 || state.Objects["sessions"][0].NextSendAt == "" {
+		t.Fatal("the state response must expose the running Session countdown")
+	}
+}
+
+// The send interval sets how often a tick goes out; a period interval no longer than it reports every tick.
+func TestPeriodCadenceFollowsSendInterval(t *testing.T) {
+	config := Config{SendIntervalSeconds: 60, PeriodIntervalSeconds: 30}
+	at := time.Now()
+	if !config.periodDue(at, at) {
+		t.Fatal("a period interval shorter than the send interval must report every tick")
+	}
+	config.PeriodIntervalSeconds = 300
+	if config.periodDue(at, at) || !config.periodDue(at.Add(5*time.Minute), at) {
+		t.Fatal("a longer period interval must wait for its own interval")
+	}
+}
+
+// The charging preview prices the live reading as of now and leaves the Session untouched.
+func TestChargingPreviewPricesLiveReading(t *testing.T) {
+	c, patches, mu := parkingPeer(t)
+	created, err := c.callSessionAction(t.Context(), "create", map[string]any{"location_id": "BKK-ARI", "evse_uid": "ARI-EVSE-1", "connector_id": "1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := fieldText(created["object"].(map[string]any), "id")
+	if err := c.callSend(t.Context(), "sessions", id, http.MethodPut); err != nil {
+		t.Fatal(err)
+	}
+	preview := func(query string, want int) map[string]any {
+		t.Helper()
+		r := httptest.NewRequest(http.MethodGet, "/api/cpo/actions/session/"+id+"/price"+query, nil)
+		r.SetPathValue("id", id)
+		w := httptest.NewRecorder()
+		c.apiChargingPreview(w, r)
+		if w.Code != want {
+			t.Fatalf("preview%s status=%d body=%s", query, w.Code, w.Body.String())
+		}
+		var result map[string]any
+		_ = json.Unmarshal(w.Body.Bytes(), &result)
+		return result
+	}
+	before := cloneMap(c.state.Objects["sessions"][id].Body)
+	mu.Lock()
+	sentBefore := len(*patches)
+	mu.Unlock()
+	stored := preview("", http.StatusOK)
+	live := preview("?kwh=2", http.StatusOK)
+	if live["priced"] != true || number(live["kwh"]) != 2 {
+		t.Fatalf("preview must price the live reading: %+v", live)
+	}
+	if number(live["total_cost"].(map[string]any)["excl_vat"]) <= number(stored["total_cost"].(map[string]any)["excl_vat"]) {
+		t.Fatalf("2 kWh must cost more than the stored reading: stored=%+v live=%+v", stored, live)
+	}
+	if got := number(c.state.Objects["sessions"][id].Body["kwh"]); got != 0 {
+		t.Fatalf("preview changed the Session kwh to %v", got)
+	}
+	if !reflect.DeepEqual(before, c.state.Objects["sessions"][id].Body) {
+		t.Fatal("preview changed the stored Session price, timestamps or periods")
+	}
+	mu.Lock()
+	previewSent := len(*patches) - sentBefore
+	mu.Unlock()
+	if previewSent != 0 {
+		t.Fatal("preview sent a Session PATCH to Evolt")
+	}
+	preview("?kwh=abc", http.StatusBadRequest)
+	preview("?kwh=-1", http.StatusBadRequest)
+	preview("?kwh=NaN", http.StatusBadRequest)
+	preview("?kwh=Inf", http.StatusBadRequest)
+	preview("?kwh=1e999", http.StatusBadRequest)
+	c.mu.Lock()
+	c.state.Objects["sessions"][id].Body["kwh"] = 2.0
+	c.mu.Unlock()
+	if got := number(preview("?kwh=1", http.StatusOK)["kwh"]); got != 2 {
+		t.Fatalf("preview lowered the stored reading: %v", got)
+	}
+
+	c.mu.Lock()
+	c.state.Commands["stop"] = &CommandRecord{ID: "stop", Type: "STOP_SESSION", CreatedAt: now(), Request: map[string]any{"session_id": id}, Result: map[string]any{"result": "ACCEPTED"}}
+	c.mu.Unlock()
+	if err := c.beginIdle(t.Context(), id, nil); err != nil {
+		t.Fatal(err)
+	}
+	preview("", http.StatusConflict)
+}

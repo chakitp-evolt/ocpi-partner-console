@@ -1,11 +1,55 @@
 package emsp
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"bitbucket.org/evoltth/evolt-ocpi-partner-console/internal/cpo"
 )
+
+func TestDualAutomationSettingsDoNotChangeOutboundSettings(t *testing.T) {
+	base := http.NewServeMux()
+	cpo.New("https://base.example").RegisterRoutes(base)
+	dual := http.NewServeMux()
+	cpo.New("https://dual.example").RegisterRoutesWithConnectionHandlers(dual, nil)
+	router := routeDual(base, dual)
+	set := func(path, body string) {
+		t.Helper()
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, httptest.NewRequest(http.MethodPut, path, strings.NewReader(body)))
+		if w.Code != http.StatusOK {
+			t.Fatalf("%s status=%d", path, w.Code)
+		}
+	}
+	interval := func(path string) int {
+		t.Helper()
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, httptest.NewRequest(http.MethodGet, path, nil))
+		var data struct {
+			Config struct {
+				SendInterval int `json:"send_interval_seconds"`
+			} `json:"config"`
+		}
+		if w.Code != http.StatusOK {
+			t.Fatalf("%s status=%d", path, w.Code)
+		}
+		if err := json.Unmarshal(w.Body.Bytes(), &data); err != nil {
+			t.Fatal(err)
+		}
+		return data.Config.SendInterval
+	}
+	set("/dual/api/cpo/automation", `{"enabled":false,"rate_kwh_per_hour":7.2,"send_interval_seconds":60}`)
+	if interval("/dual/api/cpo/state") != 60 || interval("/api/cpo/state") != 0 {
+		t.Fatal("Dual settings changed the Outbound default")
+	}
+	set("/api/cpo/automation", `{"enabled":false,"rate_kwh_per_hour":7.2,"send_interval_seconds":5}`)
+	if interval("/api/cpo/state") != 5 || interval("/dual/api/cpo/state") != 60 {
+		t.Fatal("Outbound settings changed Dual")
+	}
+}
 
 func TestDualRouteDispatch(t *testing.T) {
 	base := http.NewServeMux()

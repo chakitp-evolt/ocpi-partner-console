@@ -43,8 +43,23 @@ func TestIdleAutomationOptionsAndConnectionSync(t *testing.T) {
 	if !c.state.Config.ParkingAtUnplugOnly || c.state.Config.PeriodIntervalSeconds != 300 {
 		t.Fatal("a save without the parking and period options must keep them")
 	}
-	apply(`{"enabled":false,"rate_kwh_per_hour":7.2,"test_idle_fee":true,"idle_unplug_after_seconds":0,"period_interval_seconds":14}`, 422)
+	apply(`{"enabled":false,"rate_kwh_per_hour":7.2,"test_idle_fee":true,"idle_unplug_after_seconds":0,"period_interval_seconds":4}`, 422)
 	apply(`{"enabled":false,"rate_kwh_per_hour":7.2,"test_idle_fee":true,"idle_unplug_after_seconds":0,"period_interval_seconds":1801}`, 422)
+
+	if c.state.Config.sendInterval() != 15*time.Second {
+		t.Fatalf("default send interval = %v, want 15s", c.state.Config.sendInterval())
+	}
+	apply(`{"enabled":false,"rate_kwh_per_hour":7.2,"test_idle_fee":true,"idle_unplug_after_seconds":0,"send_interval_seconds":5}`, 200)
+	c.SyncConnection(Config{CountryCode: "TH", PartyID: "TST"}, "REGISTERED", "", "", "", "", nil)
+	if c.state.Config.sendInterval() != 5*time.Second {
+		t.Fatal("send interval must survive the save and a connection synchronization")
+	}
+	apply(`{"enabled":false,"rate_kwh_per_hour":7.2,"test_idle_fee":true,"idle_unplug_after_seconds":0}`, 200)
+	if c.state.Config.SendIntervalSeconds != 5 {
+		t.Fatal("a save without send_interval_seconds must keep it")
+	}
+	apply(`{"enabled":false,"rate_kwh_per_hour":7.2,"test_idle_fee":true,"idle_unplug_after_seconds":0,"send_interval_seconds":4}`, 422)
+	apply(`{"enabled":false,"rate_kwh_per_hour":7.2,"test_idle_fee":true,"idle_unplug_after_seconds":0,"send_interval_seconds":1801}`, 422)
 }
 
 func TestIdleUnplugTimerManualOverrideRestoreAndReset(t *testing.T) {

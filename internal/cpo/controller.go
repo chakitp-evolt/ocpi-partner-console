@@ -37,10 +37,13 @@ type Config struct {
 	// ParkingAtUnplugOnly holds a parked Session's PARKING_TIME and cost until the car leaves instead of
 	// reporting them while it stays plugged in; OCPI 2.2.1 §9.3.1 leaves that choice to the CPO.
 	ParkingAtUnplugOnly bool `json:"parking_at_unplug_only"`
-	// PeriodIntervalSeconds is how often the automatic meter reports a new Charging Period; 0 means every
-	// meter tick. Each tick in between only updates kwh and total_cost.
-	PeriodIntervalSeconds int            `json:"period_interval_seconds"`
-	RemoteIdentity        map[string]any `json:"remote_identity,omitempty"`
+	// PeriodIntervalSeconds sets the Charging Period cadence; 0 defaults to 15 seconds.
+	// Intermediate ticks only update kwh and total_cost.
+	PeriodIntervalSeconds int `json:"period_interval_seconds"`
+	// SendIntervalSeconds is how often a running meter or a parked Session sends its Session PATCH; 0 means
+	// the default 15 seconds.
+	SendIntervalSeconds int            `json:"send_interval_seconds"`
+	RemoteIdentity      map[string]any `json:"remote_identity,omitempty"`
 }
 
 type Endpoint struct {
@@ -171,6 +174,7 @@ func (c *Controller) RegisterRoutesWithConnectionHandlers(mux *http.ServeMux, ha
 	mux.HandleFunc("POST /api/cpo/actions/send", c.apiSend)
 	mux.HandleFunc("POST /api/cpo/actions/session/{action}", c.apiSessionAction)
 	mux.HandleFunc("GET /api/cpo/actions/session/{id}/parking", c.apiParkingPreview)
+	mux.HandleFunc("GET /api/cpo/actions/session/{id}/price", c.apiChargingPreview)
 	mux.HandleFunc("POST /api/cpo/actions/evse-status", c.apiEVSEStatus)
 	mux.HandleFunc("POST /api/cpo/actions/command-result/{id}", c.apiCommandResult)
 	// Tokens are keyed by country/party/uid/type, so the record id spans several path segments.
@@ -225,6 +229,7 @@ func (c *Controller) SyncConnection(config Config, status, tokenA, initial, toke
 	config.AutoMeterRateKWh = c.state.Config.AutoMeterRateKWh
 	config.ParkingAtUnplugOnly = c.state.Config.ParkingAtUnplugOnly
 	config.PeriodIntervalSeconds = c.state.Config.PeriodIntervalSeconds
+	config.SendIntervalSeconds = c.state.Config.SendIntervalSeconds
 	if reflect.DeepEqual(c.state.Config, config) && c.state.Status == status && c.state.TokenA == tokenA && c.state.InitialToken == initial && c.state.TokenB == tokenB && c.state.TokenC == tokenC && reflect.DeepEqual(c.state.Endpoints, endpoints) {
 		c.mu.Unlock()
 		return
@@ -272,6 +277,8 @@ func (c *Controller) replaceRun(ctx context.Context) error {
 }
 
 func (c *Controller) apiState(w http.ResponseWriter, _ *http.Request) {
+	// Read before c.mu: the meter loops take autoMu without holding c.mu.
+	nextSends := c.nextSendTimes()
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	objects := map[string][]map[string]any{}
@@ -287,6 +294,10 @@ func (c *Controller) apiState(w http.ResponseWriter, _ *http.Request) {
 			if module == "sessions" {
 				// Tells the UI whether a manual stop parks the Session or closes it right away.
 				row["bills_parking"] = c.sessionBillsParkingLocked(id)
+				// Set while the server sends this Session's updates on a timer, for the page's countdown.
+				if at, ok := nextSends[id]; ok {
+					row["next_send_at"] = ocpi.FormatTime(at)
+				}
 			}
 			objects[module] = append(objects[module], row)
 		}

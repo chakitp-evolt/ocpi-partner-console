@@ -3,6 +3,7 @@ package cpo
 import (
 	"encoding/json"
 	"fmt"
+	"math"
 	"net/http"
 	"strconv"
 	"strings"
@@ -298,6 +299,51 @@ func (c *Controller) meterUpdate(record *Record, increment float64, complete boo
 	record.Body["last_updated"] = timestamp
 	record.Delivery, record.UpdatedAt = "CHANGED_AFTER_SEND", timestamp
 	return patch
+}
+
+// apiChargingPreview prices a charging Session as of now at the live meter reading in ?kwh=, the way the
+// next meter update would, without changing the Session. A reading below the stored kwh is ignored.
+func (c *Controller) apiChargingPreview(w http.ResponseWriter, r *http.Request) {
+	sessionID := r.PathValue("id")
+	live := -1.0
+	if raw := r.URL.Query().Get("kwh"); raw != "" {
+		parsed, err := strconv.ParseFloat(raw, 64)
+		if err != nil || math.IsNaN(parsed) || math.IsInf(parsed, 0) || parsed < 0 {
+			writeError(w, http.StatusBadRequest, fmt.Errorf("kwh must be a non-negative number"))
+			return
+		}
+		live = parsed
+	}
+	c.mu.RLock()
+	record := c.state.Objects["sessions"][sessionID]
+	if record == nil || fieldText(record.Body, "status") != "ACTIVE" || c.idleCommandLocked(sessionID) != nil {
+		c.mu.RUnlock()
+		writeError(w, http.StatusConflict, fmt.Errorf("Session is not charging"))
+		return
+	}
+	body := cloneMap(record.Body)
+	tariffID, tariff, zone, note := c.tariffForSession(record.Body)
+	if tariff != nil {
+		tariff = cloneMap(tariff)
+	}
+	c.mu.RUnlock()
+	if live > number(body["kwh"]) {
+		body["kwh"] = live
+	}
+	at := time.Now().UTC()
+	startAt, err := parseOCPITime(fieldText(body, "start_date_time"))
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, fmt.Errorf("invalid Session start"))
+		return
+	}
+	if at.Before(startAt) {
+		at = startAt
+	}
+	price := priceSessionWithParking(tariff, tariffID, sessionSpans(body, at), startAt.In(zone), at, 0)
+	if price.Note == "" {
+		price.Note = note
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"session_id": sessionID, "as_of": at.Format(time.RFC3339Nano), "kwh": number(body["kwh"]), "total_cost": price.totalCost(), "priced": price.Priced, "note": price.Note})
 }
 
 // tariffForSession uses the Location and Tariff captured when the Session started. Caller holds c.mu.

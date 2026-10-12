@@ -199,6 +199,8 @@ func (c *Controller) stopSessionManually(w http.ResponseWriter, r *http.Request,
 		writeError(w, http.StatusConflict, err)
 		return
 	}
+	// The parking is reported while the car stays plugged in, as after an automatic stop.
+	c.startAutoRun(sessionID)
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "session_id": sessionID})
 }
 
@@ -328,13 +330,14 @@ func (c *Controller) parkingUpdate(record *Record, stop *CommandRecord, at time.
 
 // advanceParking reports a parked Session while the car is still plugged in: total_cost on every tick,
 // and PARKING_TIME Charging Periods once the period interval has passed (OCPI 2.2.1 §9.1.1, §9.3.1).
-// With ParkingAtUnplugOnly the parking waits for the unplug instead; both are valid CPO behaviour.
+// With ParkingAtUnplugOnly the parking waits for the unplug instead; both are valid CPO behaviour. It runs
+// for a Session stopped by hand as well, so it does not depend on Auto Command Flow.
 func (c *Controller) advanceParking(sessionID string, at time.Time) bool {
 	at = at.UTC().Truncate(time.Millisecond)
 	c.mu.Lock()
 	record := c.state.Objects["sessions"][sessionID]
 	stop := c.idleCommandLocked(sessionID)
-	if !c.state.Config.AutoCommandFlow || record == nil || stop == nil || fieldText(record.Body, "status") != "ACTIVE" || record.Delivery != "SENT" || c.unplugging[sessionID] {
+	if record == nil || stop == nil || fieldText(record.Body, "status") != "ACTIVE" || record.Delivery != "SENT" || c.unplugging[sessionID] {
 		c.mu.Unlock()
 		return false
 	}
