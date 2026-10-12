@@ -35,7 +35,7 @@ type RequestExchange struct {
 }
 
 func (s *Store) ListRequestFixtures(ctx context.Context) ([]RequestFixture, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id,lane,module,name,content,method,target_url,headers,use_auth,expected_http,expected_ocpi,valid_json,findings,updated_at FROM request_fixtures ORDER BY lane,module,id`)
+	rows, err := s.db.QueryContext(ctx, `SELECT id,lane,module,name,content,method,target_url,headers,use_auth,expected_http,expected_ocpi,valid_json,findings,updated_at FROM partner_console_saved_requests ORDER BY lane,module,id`)
 	if err != nil {
 		return nil, err
 	}
@@ -55,7 +55,7 @@ func (s *Store) UpsertRequestFixture(ctx context.Context, fixture RequestFixture
 	if len(fixture.Headers) == 0 {
 		fixture.Headers = json.RawMessage(`{}`)
 	}
-	_, err := s.db.ExecContext(ctx, `INSERT INTO request_fixtures(id,lane,module,name,content,method,target_url,headers,use_auth,expected_http,expected_ocpi,valid_json,findings) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
+	_, err := s.db.ExecContext(ctx, `INSERT INTO partner_console_saved_requests(id,lane,module,name,content,method,target_url,headers,use_auth,expected_http,expected_ocpi,valid_json,findings) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
 		ON CONFLICT(id) DO UPDATE SET lane=excluded.lane,module=excluded.module,name=excluded.name,content=excluded.content,method=excluded.method,target_url=excluded.target_url,headers=excluded.headers,use_auth=excluded.use_auth,expected_http=excluded.expected_http,expected_ocpi=excluded.expected_ocpi,valid_json=excluded.valid_json,findings=excluded.findings,updated_at=now()`,
 		fixture.ID, fixture.Lane, fixture.Module, fixture.Name, fixture.Content, fixture.Method, fixture.TargetURL, fixture.Headers, fixture.UseAuth, fixture.ExpectedHTTP, fixture.ExpectedOCPI, fixture.ValidJSON, fixture.Findings)
 	return err
@@ -63,18 +63,44 @@ func (s *Store) UpsertRequestFixture(ctx context.Context, fixture RequestFixture
 
 func (s *Store) GetRequestFixture(ctx context.Context, id string) (RequestFixture, error) {
 	var fixture RequestFixture
-	err := s.db.QueryRowContext(ctx, `SELECT id,lane,module,name,content,method,target_url,headers,use_auth,expected_http,expected_ocpi,valid_json,findings,updated_at FROM request_fixtures WHERE id=$1`, id).
+	err := s.db.QueryRowContext(ctx, `SELECT id,lane,module,name,content,method,target_url,headers,use_auth,expected_http,expected_ocpi,valid_json,findings,updated_at FROM partner_console_saved_requests WHERE id=$1`, id).
 		Scan(&fixture.ID, &fixture.Lane, &fixture.Module, &fixture.Name, &fixture.Content, &fixture.Method, &fixture.TargetURL, &fixture.Headers, &fixture.UseAuth, &fixture.ExpectedHTTP, &fixture.ExpectedOCPI, &fixture.ValidJSON, &fixture.Findings, &fixture.UpdatedAt)
 	return fixture, err
 }
 
 func (s *Store) AddRequestExchange(ctx context.Context, exchange RequestExchange) error {
-	_, err := s.db.ExecContext(ctx, `INSERT INTO request_exchanges(fixture_id,request,response,status,duration_ms) VALUES($1,$2,$3,$4,$5)`, exchange.FixtureID, exchange.Request, exchange.Response, exchange.Status, exchange.DurationMS)
+	var request struct {
+		Method  string          `json:"method"`
+		URL     string          `json:"url"`
+		Headers json.RawMessage `json:"headers"`
+		Body    json.RawMessage `json:"body"`
+	}
+	var response struct {
+		Error          *string         `json:"error"`
+		HTTPStatus     *int            `json:"http_status"`
+		Headers        json.RawMessage `json:"headers"`
+		Body           json.RawMessage `json:"body"`
+		OCPIStatusCode *int            `json:"ocpi_status_code"`
+	}
+	if err := json.Unmarshal(exchange.Request, &request); err != nil {
+		return err
+	}
+	if err := json.Unmarshal(exchange.Response, &response); err != nil {
+		return err
+	}
+	_, err := s.db.ExecContext(ctx, `INSERT INTO partner_console_exchanges(saved_request_id,method,url,request_headers,request_body,http_status,response_headers,response_body,ocpi_status_code,error,result,duration_ms)
+		VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`, exchange.FixtureID, request.Method, request.URL, rawOrNil(request.Headers), rawOrNil(request.Body),
+		response.HTTPStatus, rawOrNil(response.Headers), rawOrNil(response.Body), response.OCPIStatusCode, response.Error, exchange.Status, exchange.DurationMS)
 	return err
 }
 
 func (s *Store) RecentRequestExchanges(ctx context.Context) ([]RequestExchange, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id,fixture_id,request,response,status,duration_ms,created_at FROM request_exchanges ORDER BY created_at DESC LIMIT 100`)
+	rows, err := s.db.QueryContext(ctx, `SELECT seq,saved_request_id,
+		jsonb_build_object('method',method,'url',url,'headers',request_headers,'body',request_body),
+		CASE WHEN error IS NOT NULL THEN jsonb_build_object('error',error)
+		ELSE jsonb_build_object('http_status',http_status,'headers',response_headers,'body',response_body,'ocpi_status_code',ocpi_status_code) END,
+		result,duration_ms,created_at
+		FROM partner_console_exchanges WHERE saved_request_id IS NOT NULL ORDER BY created_at DESC LIMIT 100`)
 	if err != nil {
 		return nil, err
 	}
@@ -99,21 +125,17 @@ func (s *Store) LaneEndpointURLs(ctx context.Context, lane string) ([]string, er
 		if lane == "DUAL_EMSP" {
 			profile = "dual"
 		}
-		rows, err = s.db.QueryContext(ctx, `SELECT endpoint.url
-			FROM emsp_endpoints endpoint
-			JOIN emsp_connections run ON run.id=endpoint.connection_id
-			WHERE endpoint.platform='remote' AND run.profile=$1
-			ORDER BY run.updated_at DESC, endpoint.id`, profile)
+		rows, err = s.db.QueryContext(ctx, `SELECT e->>'url' FROM partner_console_connections, jsonb_array_elements(endpoints) WITH ORDINALITY AS t(e,n)
+			WHERE leg='emsp' AND profile=$1 AND e->>'platform'='remote'
+			ORDER BY updated_at DESC, n`, profile)
 	case "CPO", "DUAL_CPO":
 		profile := "cpo"
 		if lane == "DUAL_CPO" {
 			profile = "dual"
 		}
-		rows, err = s.db.QueryContext(ctx, `SELECT endpoint.url
-			FROM cpo_endpoints endpoint
-			JOIN cpo_connections run ON run.id=endpoint.connection_id
-			WHERE run.profile=$1
-			ORDER BY run.updated_at DESC, endpoint.id`, profile)
+		rows, err = s.db.QueryContext(ctx, `SELECT e->>'url' FROM partner_console_connections, jsonb_array_elements(endpoints) WITH ORDINALITY AS t(e,n)
+			WHERE leg='cpo' AND profile=$1
+			ORDER BY updated_at DESC, n`, profile)
 	default:
 		return nil, nil
 	}
@@ -130,4 +152,12 @@ func (s *Store) LaneEndpointURLs(ctx context.Context, lane string) ([]string, er
 		result = append(result, value)
 	}
 	return result, rows.Err()
+}
+
+// rawOrNil stores a missing JSON field as SQL NULL and keeps a present one, JSON null included.
+func rawOrNil(raw json.RawMessage) any {
+	if len(raw) == 0 {
+		return nil
+	}
+	return []byte(raw)
 }

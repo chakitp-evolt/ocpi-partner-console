@@ -29,7 +29,7 @@ app **ไม่ migrate เอง** ต้องรัน script ด้วยม
 psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f scripts/db/001_init.sql
 ```
 
-ถ้ายังไม่ได้รัน app จะ boot ไม่ผ่าน (`relation ... does not exist`)
+ถ้ายังไม่ได้รัน app จะ boot ไม่ผ่าน (`relation ... does not exist`) · script รันใน transaction เดียว และหยุดทันทีถ้ามีตาราง `partner_console_*` อยู่แล้ว (ไม่แก้อะไร) จึงใช้ DB ร่วมกับ service อื่นได้โดยไม่ชนชื่อตาราง แต่แนะนำ database แยก
 
 ### Environment
 
@@ -101,12 +101,16 @@ internal/web/        หน้าเว็บ (emsp / cpo / dual) embed เข�
 scripts/db/          SQL ที่ต้องรันด้วยมือ
 ```
 
-| ตาราง | ใช้โดย |
+| ตาราง | เก็บอะไร |
 |---|---|
-| `emsp_*` | eMSP mock และ dual (`emsp_connections.profile` = `emsp` / `dual`) |
-| `cpo_*` | CPO mock และขา CPO ของ dual (`cpo_connections.profile` = `cpo` / `dual`) |
-| `request_fixtures`, `request_exchanges` | แผง Requests |
+| `partner_console_connections` | 1 แถวต่อหน้าต่อขา: `/emsp` (`leg=emsp`), `/cpo` (`leg=cpo`), `/dual` (ทั้งสองขา, `profile=dual`) — config, status, credentials, token ที่เข้ารหัส (`secrets`) และ endpoint ของ Evolt (`endpoints`) |
+| `partner_console_objects` | OCPI object ของทั้งสองขา แยกด้วย `leg` และ `module` (locations, tariffs, sessions, cdrs, tokens) |
+| `partner_console_commands` | START / STOP ของทั้งสองขา แยกด้วย `leg` |
+| `partner_console_exchanges` | log request/response ทุกครั้ง ของ connection (`connection_id`) หรือของ saved request (`saved_request_id`) — method, url, http_status ฯลฯ เป็น column ให้ query ตรงๆ ได้ |
+| `partner_console_saved_requests` | request ที่บันทึกไว้ในแผง Requests |
 
-`*_connections` คือ connection ปัจจุบันของแต่ละหน้า (1 แถวต่อ profile, app สร้างเองตอน boot) เก็บ config, status และ credentials ตารางลูกผูกด้วย `connection_id ... ON DELETE CASCADE` — ปุ่ม Reset ลบแถวนี้แล้วสร้างใหม่ ข้อมูลของหน้านั้นจึงหายทั้งชุดโดยไม่กระทบหน้าอื่น · ล้างข้อมูลด้วยปุ่ม Reset เท่านั้น อย่า `DELETE`/`INSERT` ตารางนี้เอง
+DB ตรวจข้อมูลผิดรูปเอง: `leg` ของ `partner_console_objects`/`partner_console_commands` ต้องตรงกับ connection (composite foreign key), column ที่ใช้แค่ขาเดียวห้ามมีค่าในอีกขา, `module`/`profile`/`lane` ต้องเป็นค่าที่รู้จัก และมีได้ 1 connection ต่อหน้าต่อขา
+
+ปุ่ม Reset ลบแถวใน `partner_console_connections` แล้วสร้างใหม่ — `partner_console_objects`, `partner_console_commands`, `partner_console_exchanges` ของ connection นั้นหายตาม (`ON DELETE CASCADE`) โดยไม่กระทบหน้าอื่น ส่วน saved request ไม่ถูกล้าง · ล้างข้อมูลด้วยปุ่ม Reset เท่านั้น อย่า `DELETE`/`INSERT` ตาราง `partner_console_connections` เอง
 
 พฤติกรรม OCPI อ้างอิง OCPI 2.2.1 (`OCPI-2.2.1-d2.pdf`) และหา endpoint ของ Evolt จาก Version Details เท่านั้น

@@ -47,6 +47,18 @@ type CPOSnapshot struct {
 	Exchanges   []json.RawMessage
 }
 
+// ocpiTime renders a timestamp in the OCPI layout the CPO controller writes, so restored times
+// sort and parse like fresh ones.
+const ocpiTime = `'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'`
+
+// cpoExchangeJSON rebuilds an exchange exactly as the CPO controller marshals it.
+const cpoExchangeJSON = `jsonb_build_object('id',exchange_id,'direction',direction,'module',module,'method',method,'url',url,'http_status',http_status,
+	'request_headers',request_headers,'response_headers',response_headers,'findings',findings,'duration_ms',duration_ms,
+	'created_at',to_char(created_at AT TIME ZONE 'UTC',` + ocpiTime + `))
+	|| CASE WHEN COALESCE(ocpi_status_code,0)<>0 THEN jsonb_build_object('ocpi_status_code',ocpi_status_code) ELSE '{}'::jsonb END
+	|| CASE WHEN request_body IS NOT NULL THEN jsonb_build_object('request_body',request_body) ELSE '{}'::jsonb END
+	|| CASE WHEN response_body IS NOT NULL THEN jsonb_build_object('response_body',response_body) ELSE '{}'::jsonb END`
+
 func (s *Store) LoadCPO(ctx context.Context) (CPOSnapshot, error) {
 	return s.LoadCPOProfile(ctx, "cpo")
 }
@@ -54,44 +66,29 @@ func (s *Store) LoadCPO(ctx context.Context) (CPOSnapshot, error) {
 func (s *Store) LoadCPOProfile(ctx context.Context, profile string) (CPOSnapshot, error) {
 	var snapshot CPOSnapshot
 	snapshot.Profile = profile
-	if err := s.db.QueryRowContext(ctx, `SELECT id,status,config,credentials FROM cpo_connections WHERE profile=$1 ORDER BY updated_at DESC LIMIT 1`, profile).Scan(&snapshot.RunID, &snapshot.Status, &snapshot.Config, &snapshot.Credentials); err != nil {
+	var secrets, endpoints []byte
+	if err := s.db.QueryRowContext(ctx, `SELECT id,status,config,credentials,secrets,endpoints FROM partner_console_connections WHERE leg='cpo' AND profile=$1 ORDER BY updated_at DESC LIMIT 1`, profile).Scan(&snapshot.RunID, &snapshot.Status, &snapshot.Config, &snapshot.Credentials, &secrets, &endpoints); err != nil {
 		return snapshot, err
 	}
-	snapshot.Secrets = map[string]string{}
-	rows, err := s.db.QueryContext(ctx, `SELECT key,ciphertext FROM cpo_secrets WHERE connection_id=$1`, snapshot.RunID)
-	if err != nil {
+	var sealed map[string]struct {
+		Ciphertext string `json:"ciphertext"`
+	}
+	if err := json.Unmarshal(secrets, &sealed); err != nil {
 		return snapshot, err
 	}
-	for rows.Next() {
-		var key, ciphertext string
-		if err := rows.Scan(&key, &ciphertext); err != nil {
-			rows.Close()
-			return snapshot, err
-		}
-		value, err := s.decryptCPOSecret(snapshot.RunID, key, ciphertext)
+	snapshot.Secrets = make(map[string]string, len(sealed))
+	for key, item := range sealed {
+		value, err := s.decryptCPOSecret(snapshot.RunID, key, item.Ciphertext)
 		if err != nil {
-			rows.Close()
 			return snapshot, err
 		}
 		snapshot.Secrets[key] = value
 	}
-	rows.Close()
-
-	rows, err = s.db.QueryContext(ctx, `SELECT jsonb_build_object('identifier',identifier,'role',role,'url',url) FROM cpo_endpoints WHERE connection_id=$1 ORDER BY id`, snapshot.RunID)
-	if err != nil {
+	if err := json.Unmarshal(endpoints, &snapshot.Endpoints); err != nil {
 		return snapshot, err
 	}
-	for rows.Next() {
-		var raw json.RawMessage
-		if err := rows.Scan(&raw); err != nil {
-			rows.Close()
-			return snapshot, err
-		}
-		snapshot.Endpoints = append(snapshot.Endpoints, raw)
-	}
-	rows.Close()
 
-	rows, err = s.db.QueryContext(ctx, `SELECT module,object_id,body,snapshot,delivery,findings,cdr_location,updated_at::text FROM cpo_objects WHERE connection_id=$1 ORDER BY module,object_id`, snapshot.RunID)
+	rows, err := s.db.QueryContext(ctx, `SELECT module,object_id,body,snapshot,delivery,findings,cdr_location,to_char(updated_at AT TIME ZONE 'UTC',`+ocpiTime+`) FROM partner_console_objects WHERE connection_id=$1 ORDER BY module,object_id`, snapshot.RunID)
 	if err != nil {
 		return snapshot, err
 	}
@@ -105,7 +102,7 @@ func (s *Store) LoadCPOProfile(ctx context.Context, profile string) (CPOSnapshot
 	}
 	rows.Close()
 
-	rows, err = s.db.QueryContext(ctx, `SELECT id,type,status,request,response_url,COALESCE(result,'null'::jsonb),created_at::text,updated_at::text FROM cpo_commands WHERE connection_id=$1 ORDER BY created_at`, snapshot.RunID)
+	rows, err = s.db.QueryContext(ctx, `SELECT id,type,status,request,response_url,COALESCE(result,'null'::jsonb),to_char(created_at AT TIME ZONE 'UTC',`+ocpiTime+`),to_char(updated_at AT TIME ZONE 'UTC',`+ocpiTime+`) FROM partner_console_commands WHERE connection_id=$1 ORDER BY created_at`, snapshot.RunID)
 	if err != nil {
 		return snapshot, err
 	}
@@ -119,7 +116,7 @@ func (s *Store) LoadCPOProfile(ctx context.Context, profile string) (CPOSnapshot
 	}
 	rows.Close()
 
-	rows, err = s.db.QueryContext(ctx, `SELECT payload FROM cpo_exchanges WHERE connection_id=$1 ORDER BY created_at DESC LIMIT 300`, snapshot.RunID)
+	rows, err = s.db.QueryContext(ctx, `SELECT `+cpoExchangeJSON+` FROM partner_console_exchanges WHERE connection_id=$1 ORDER BY created_at DESC LIMIT 300`, snapshot.RunID)
 	if err != nil {
 		return snapshot, err
 	}
@@ -144,16 +141,7 @@ func (s *Store) SaveCPO(ctx context.Context, snapshot CPOSnapshot) error {
 		return err
 	}
 	defer tx.Rollback()
-	if _, err := tx.ExecContext(ctx, `INSERT INTO cpo_connections(id,status,config,credentials,profile) VALUES($1,$2,$3,$4,$5)
-		ON CONFLICT(id) DO UPDATE SET status=excluded.status,config=excluded.config,credentials=excluded.credentials,updated_at=now()`, snapshot.RunID, snapshot.Status, snapshot.Config, snapshot.Credentials, snapshot.Profile); err != nil {
-		return err
-	}
-	for _, table := range []string{"cpo_secrets", "cpo_endpoints", "cpo_objects", "cpo_commands", "cpo_exchanges"} {
-		if _, err := tx.ExecContext(ctx, fmt.Sprintf(`DELETE FROM %s WHERE connection_id=$1`, table), snapshot.RunID); err != nil {
-			return err
-		}
-	}
-	secretRows := make([][]any, 0, len(snapshot.Secrets))
+	sealed := make(map[string]string, len(snapshot.Secrets))
 	for key, value := range snapshot.Secrets {
 		if value == "" {
 			continue
@@ -162,54 +150,94 @@ func (s *Store) SaveCPO(ctx context.Context, snapshot CPOSnapshot) error {
 		if err != nil {
 			return err
 		}
-		secretRows = append(secretRows, []any{snapshot.RunID, key, ciphertext})
+		sealed[key] = ciphertext
 	}
-	if err := insertRows(ctx, tx, `INSERT INTO cpo_secrets(connection_id,key,ciphertext) VALUES `, secretRows); err != nil {
-		return err
-	}
-	endpointRows := make([][]any, 0, len(snapshot.Endpoints))
+	secrets, _ := json.Marshal(sealed)
+	endpointList := make([]map[string]string, 0, len(snapshot.Endpoints))
 	for _, raw := range snapshot.Endpoints {
 		var endpoint struct{ Identifier, Role, URL string }
 		if err := json.Unmarshal(raw, &endpoint); err != nil {
 			return err
 		}
-		endpointRows = append(endpointRows, []any{snapshot.RunID, endpoint.Identifier, endpoint.Role, endpoint.URL})
+		endpointList = append(endpointList, map[string]string{"identifier": endpoint.Identifier, "role": endpoint.Role, "url": endpoint.URL})
 	}
-	if err := insertRows(ctx, tx, `INSERT INTO cpo_endpoints(connection_id,identifier,role,url) VALUES `, endpointRows); err != nil {
+	endpoints, _ := json.Marshal(endpointList)
+	if _, err := tx.ExecContext(ctx, `INSERT INTO partner_console_connections(id,leg,profile,status,config,credentials,secrets,endpoints)
+		VALUES($1,'cpo',$2,$3,$4,$5,(SELECT COALESCE(jsonb_object_agg(k,jsonb_build_object('ciphertext',v,'updated_at',now()::text)),'{}'::jsonb) FROM jsonb_each_text($6::jsonb) AS t(k,v)),$7)
+		ON CONFLICT(id) DO UPDATE SET status=excluded.status,config=excluded.config,credentials=excluded.credentials,secrets=excluded.secrets,endpoints=excluded.endpoints,updated_at=now()`,
+		snapshot.RunID, snapshot.Profile, snapshot.Status, snapshot.Config, snapshot.Credentials, secrets, endpoints); err != nil {
 		return err
 	}
+	// Rows are upserted only when a value changed and removed when the snapshot no longer has them,
+	// so a save rewrites what moved instead of the whole run.
 	objectRows := make([][]any, 0, len(snapshot.Objects))
+	objectKeys := make([][2]string, 0, len(snapshot.Objects))
 	for _, item := range snapshot.Objects {
 		objectRows = append(objectRows, []any{snapshot.RunID, item.Module, item.ObjectID, item.Body, item.Snapshot, item.Delivery, item.Findings, item.CDRLocation, item.UpdatedAt})
+		objectKeys = append(objectKeys, [2]string{item.Module, item.ObjectID})
 	}
-	if err := insertRows(ctx, tx, `INSERT INTO cpo_objects(connection_id,module,object_id,body,snapshot,delivery,findings,cdr_location,updated_at) VALUES `, objectRows); err != nil {
+	if err := insertRows(ctx, tx, `INSERT INTO partner_console_objects(connection_id,leg,module,object_id,body,snapshot,delivery,findings,cdr_location,updated_at) VALUES `, "'cpo'", objectRows,
+		` ON CONFLICT(connection_id,module,country_code,party_id,object_id,token_type) DO UPDATE SET body=excluded.body,snapshot=excluded.snapshot,delivery=excluded.delivery,findings=excluded.findings,cdr_location=excluded.cdr_location,updated_at=excluded.updated_at
+		WHERE (partner_console_objects.body,partner_console_objects.snapshot,partner_console_objects.delivery,partner_console_objects.findings,partner_console_objects.cdr_location,partner_console_objects.updated_at) IS DISTINCT FROM (excluded.body,excluded.snapshot,excluded.delivery,excluded.findings,excluded.cdr_location,excluded.updated_at)`); err != nil {
 		return err
 	}
+	keys, _ := json.Marshal(objectKeys)
+	if _, err := tx.ExecContext(ctx, `DELETE FROM partner_console_objects WHERE connection_id=$1 AND NOT EXISTS (SELECT 1 FROM jsonb_array_elements($2::jsonb) AS k WHERE k->>0=partner_console_objects.module AND k->>1=partner_console_objects.object_id)`, snapshot.RunID, keys); err != nil {
+		return err
+	}
+
 	commandRows := make([][]any, 0, len(snapshot.Commands))
+	commandIDs := make([]string, 0, len(snapshot.Commands))
 	for _, item := range snapshot.Commands {
 		commandRows = append(commandRows, []any{snapshot.RunID, item.ID, item.Type, item.Status, item.Request, item.ResponseURL, nullableJSON(item.Result), item.CreatedAt, item.UpdatedAt})
+		commandIDs = append(commandIDs, item.ID)
 	}
-	if err := insertRows(ctx, tx, `INSERT INTO cpo_commands(connection_id,id,type,status,request,response_url,result,created_at,updated_at) VALUES `, commandRows); err != nil {
+	if err := insertRows(ctx, tx, `INSERT INTO partner_console_commands(connection_id,leg,id,type,status,request,response_url,result,created_at,updated_at) VALUES `, "'cpo'", commandRows,
+		` ON CONFLICT(connection_id,id) DO UPDATE SET type=excluded.type,status=excluded.status,request=excluded.request,response_url=excluded.response_url,result=excluded.result,created_at=excluded.created_at,updated_at=excluded.updated_at
+		WHERE (partner_console_commands.type,partner_console_commands.status,partner_console_commands.request,partner_console_commands.response_url,partner_console_commands.result,partner_console_commands.created_at,partner_console_commands.updated_at) IS DISTINCT FROM (excluded.type,excluded.status,excluded.request,excluded.response_url,excluded.result,excluded.created_at,excluded.updated_at)`); err != nil {
 		return err
 	}
+	ids, _ := json.Marshal(commandIDs)
+	if _, err := tx.ExecContext(ctx, `DELETE FROM partner_console_commands WHERE connection_id=$1 AND id <> ALL(ARRAY(SELECT jsonb_array_elements_text($2::jsonb)))`, snapshot.RunID, ids); err != nil {
+		return err
+	}
+
+	// Exchanges never change once recorded: insert the new ones. The ones trimmed from memory stay in the
+	// database as history; Reset removes them with the connection.
 	exchangeRows := make([][]any, 0, len(snapshot.Exchanges))
 	for _, raw := range snapshot.Exchanges {
-		var meta struct {
-			ID        string `json:"id"`
-			CreatedAt string `json:"created_at"`
+		var exchange struct {
+			ID              string          `json:"id"`
+			Direction       string          `json:"direction"`
+			Module          string          `json:"module"`
+			Method          string          `json:"method"`
+			URL             string          `json:"url"`
+			HTTPStatus      int             `json:"http_status"`
+			OCPIStatusCode  *int            `json:"ocpi_status_code"`
+			RequestHeaders  json.RawMessage `json:"request_headers"`
+			RequestBody     json.RawMessage `json:"request_body"`
+			ResponseHeaders json.RawMessage `json:"response_headers"`
+			ResponseBody    json.RawMessage `json:"response_body"`
+			Findings        json.RawMessage `json:"findings"`
+			DurationMS      int64           `json:"duration_ms"`
+			CreatedAt       string          `json:"created_at"`
 		}
-		if err := json.Unmarshal(raw, &meta); err != nil {
+		if err := json.Unmarshal(raw, &exchange); err != nil {
 			return err
 		}
-		exchangeRows = append(exchangeRows, []any{snapshot.RunID, meta.ID, raw, meta.CreatedAt})
+		exchangeRows = append(exchangeRows, []any{snapshot.RunID, exchange.ID, exchange.Direction, exchange.Module, exchange.Method, exchange.URL, exchange.HTTPStatus, exchange.OCPIStatusCode,
+			rawOrNil(exchange.RequestHeaders), rawOrNil(exchange.RequestBody), rawOrNil(exchange.ResponseHeaders), rawOrNil(exchange.ResponseBody), rawOrNil(exchange.Findings), exchange.DurationMS, exchange.CreatedAt})
 	}
-	if err := insertRows(ctx, tx, `INSERT INTO cpo_exchanges(connection_id,id,payload,created_at) VALUES `, exchangeRows); err != nil {
+	if err := insertRows(ctx, tx, `INSERT INTO partner_console_exchanges(connection_id,exchange_id,direction,module,method,url,http_status,ocpi_status_code,request_headers,request_body,response_headers,response_body,findings,duration_ms,created_at) VALUES `, "", exchangeRows,
+		` ON CONFLICT(connection_id,exchange_id) WHERE exchange_id IS NOT NULL DO NOTHING`); err != nil {
 		return err
 	}
 	return tx.Commit()
 }
 
-func insertRows(ctx context.Context, tx *sql.Tx, prefix string, rows [][]any) error {
+// insertRows writes rows in one statement. A non-empty literal goes in as the second value of every
+// row (the leg), and suffix is appended after the VALUES list (an ON CONFLICT clause).
+func insertRows(ctx context.Context, tx *sql.Tx, prefix, literal string, rows [][]any, suffix string) error {
 	if len(rows) == 0 {
 		return nil
 	}
@@ -220,19 +248,22 @@ func insertRows(ctx context.Context, tx *sql.Tx, prefix string, rows [][]any) er
 		if len(row) != width {
 			return fmt.Errorf("batch row %d has %d columns, want %d", rowIndex, len(row), width)
 		}
-		placeholders := make([]string, width)
+		placeholders := make([]string, 0, width+1)
 		for columnIndex := range row {
-			placeholders[columnIndex] = fmt.Sprintf("$%d", len(args)+columnIndex+1)
+			placeholders = append(placeholders, fmt.Sprintf("$%d", len(args)+columnIndex+1))
+			if columnIndex == 0 && literal != "" {
+				placeholders = append(placeholders, literal)
+			}
 		}
 		values = append(values, "("+strings.Join(placeholders, ",")+")")
 		args = append(args, row...)
 	}
-	_, err := tx.ExecContext(ctx, prefix+strings.Join(values, ","), args...)
+	_, err := tx.ExecContext(ctx, prefix+strings.Join(values, ",")+suffix, args...)
 	return err
 }
 
 func (s *Store) DeleteCPO(ctx context.Context, runID string) error {
-	result, err := s.db.ExecContext(ctx, `DELETE FROM cpo_connections WHERE id=$1`, runID)
+	result, err := s.db.ExecContext(ctx, `DELETE FROM partner_console_connections WHERE id=$1 AND leg='cpo'`, runID)
 	if err != nil {
 		return err
 	}
@@ -244,15 +275,15 @@ func (s *Store) DeleteCPO(ctx context.Context, runID string) error {
 
 func (s *Store) CPOTables(ctx context.Context, runID string, revealSecrets bool) (map[string]json.RawMessage, error) {
 	queries := map[string]string{
-		"setup":     `SELECT COALESCE(jsonb_agg(to_jsonb(x)), '[]'::jsonb) FROM (SELECT id,status,config,created_at,updated_at FROM cpo_connections WHERE id=$1) x`,
-		"endpoints": `SELECT COALESCE(jsonb_agg(to_jsonb(x)), '[]'::jsonb) FROM (SELECT identifier,role,url FROM cpo_endpoints WHERE connection_id=$1 ORDER BY id) x`,
-		"locations": `SELECT COALESCE(jsonb_agg(to_jsonb(x)), '[]'::jsonb) FROM (SELECT object_id,body,delivery,findings,updated_at FROM cpo_objects WHERE connection_id=$1 AND module='locations' ORDER BY updated_at DESC) x`,
-		"tariffs":   `SELECT COALESCE(jsonb_agg(to_jsonb(x)), '[]'::jsonb) FROM (SELECT object_id,body,delivery,findings,updated_at FROM cpo_objects WHERE connection_id=$1 AND module='tariffs' ORDER BY updated_at DESC) x`,
-		"sessions":  `SELECT COALESCE(jsonb_agg(to_jsonb(x)), '[]'::jsonb) FROM (SELECT object_id,body,delivery,findings,updated_at FROM cpo_objects WHERE connection_id=$1 AND module='sessions' ORDER BY updated_at DESC) x`,
-		"cdrs":      `SELECT COALESCE(jsonb_agg(to_jsonb(x)), '[]'::jsonb) FROM (SELECT object_id,body,delivery,cdr_location,findings,updated_at FROM cpo_objects WHERE connection_id=$1 AND module='cdrs' ORDER BY updated_at DESC) x`,
-		"tokens":    `SELECT COALESCE(jsonb_agg(to_jsonb(x)), '[]'::jsonb) FROM (SELECT object_id,body,delivery,findings,updated_at FROM cpo_objects WHERE connection_id=$1 AND module='tokens' ORDER BY updated_at DESC) x`,
-		"commands":  `SELECT COALESCE(jsonb_agg(to_jsonb(x)), '[]'::jsonb) FROM (SELECT id,type,status,request,response_url,result,created_at,updated_at FROM cpo_commands WHERE connection_id=$1 ORDER BY created_at DESC) x`,
-		"exchanges": `SELECT COALESCE(jsonb_agg(payload ORDER BY created_at DESC), '[]'::jsonb) FROM cpo_exchanges WHERE connection_id=$1`,
+		"setup":     `SELECT COALESCE(jsonb_agg(to_jsonb(x)), '[]'::jsonb) FROM (SELECT id,status,config,created_at,updated_at FROM partner_console_connections WHERE id=$1) x`,
+		"endpoints": `SELECT COALESCE((SELECT endpoints FROM partner_console_connections WHERE id=$1), '[]'::jsonb)`,
+		"locations": cpoObjectQuery("locations", "object_id,body,delivery,findings,updated_at"),
+		"tariffs":   cpoObjectQuery("tariffs", "object_id,body,delivery,findings,updated_at"),
+		"sessions":  cpoObjectQuery("sessions", "object_id,body,delivery,findings,updated_at"),
+		"cdrs":      cpoObjectQuery("cdrs", "object_id,body,delivery,cdr_location,findings,updated_at"),
+		"tokens":    cpoObjectQuery("tokens", "object_id,body,delivery,findings,updated_at"),
+		"commands":  `SELECT COALESCE(jsonb_agg(to_jsonb(x)), '[]'::jsonb) FROM (SELECT id,type,status,request,response_url,result,created_at,updated_at FROM partner_console_commands WHERE connection_id=$1 ORDER BY created_at DESC) x`,
+		"exchanges": `SELECT COALESCE(jsonb_agg(x.entry ORDER BY x.created_at DESC), '[]'::jsonb) FROM (SELECT ` + cpoExchangeJSON + ` AS entry,created_at FROM partner_console_exchanges WHERE connection_id=$1 ORDER BY created_at DESC LIMIT 300) x`,
 	}
 	result := make(map[string]json.RawMessage, len(queries)+1)
 	for name, query := range queries {
@@ -270,8 +301,12 @@ func (s *Store) CPOTables(ctx context.Context, runID string, revealSecrets bool)
 	return result, nil
 }
 
+func cpoObjectQuery(module, columns string) string {
+	return `SELECT COALESCE(jsonb_agg(to_jsonb(x)), '[]'::jsonb) FROM (SELECT ` + columns + ` FROM partner_console_objects WHERE connection_id=$1 AND module='` + module + `' ORDER BY updated_at DESC) x`
+}
+
 func (s *Store) cpoLabSecretTable(ctx context.Context, runID string, reveal bool) (json.RawMessage, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT key,ciphertext,updated_at::text FROM cpo_secrets WHERE connection_id=$1 ORDER BY key`, runID)
+	rows, err := s.db.QueryContext(ctx, `SELECT secret.key,secret.value->>'ciphertext',secret.value->>'updated_at' FROM partner_console_connections, jsonb_each(secrets) AS secret WHERE id=$1 ORDER BY secret.key`, runID)
 	if err != nil {
 		return nil, err
 	}

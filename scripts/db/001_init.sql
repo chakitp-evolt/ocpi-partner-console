@@ -1,199 +1,122 @@
 -- evolt-ocpi-partner-console: initial schema (PostgreSQL 14+)
--- Run once by hand on an empty database before the first deploy:
+--
+-- Run once, by hand, on the console's own empty database before the first deploy:
 --   psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f scripts/db/001_init.sql
--- Every statement is IF NOT EXISTS, so a re-run is a no-op.
+--
+-- - The whole script is one transaction: any error rolls everything back.
+-- - It stops if a partner_console_* table already exists, so it never runs over an existing schema.
+-- - Check afterwards: \dt partner_console_*   (5 tables)
 
 BEGIN;
 
--- ============================================================
--- eMSP mock (/emsp) and the dual-role partner (/dual, profile = 'dual')
--- ============================================================
+DO $$
+DECLARE
+  existing text;
+BEGIN
+  SELECT string_agg(table_name, ', ' ORDER BY table_name) INTO existing
+  FROM information_schema.tables
+  WHERE table_schema = current_schema() AND table_name LIKE 'partner\_console\_%';
+  IF existing IS NOT NULL THEN
+    RAISE EXCEPTION 'partner console tables already exist in schema %: %', current_schema(), existing
+      USING HINT = 'This script creates the schema once; nothing was changed.';
+  END IF;
+END
+$$;
 
-CREATE TABLE IF NOT EXISTS emsp_connections (
+-- ---- connections ----------------------------------------------------------------------------
+
+CREATE TABLE partner_console_connections (
   id text PRIMARY KEY,
-  profile text NOT NULL DEFAULT 'emsp',
-  name text NOT NULL,
+  leg text NOT NULL CHECK (leg IN ('emsp', 'cpo')),
+  profile text NOT NULL,
+  name text NOT NULL DEFAULT '',
   status text NOT NULL DEFAULT 'SETUP',
-  config jsonb NOT NULL DEFAULT '{}'::jsonb,
-  created_at timestamptz NOT NULL DEFAULT now(),
-  updated_at timestamptz NOT NULL DEFAULT now()
-);
-CREATE INDEX IF NOT EXISTS idx_emsp_connections_profile ON emsp_connections(profile);
-CREATE TABLE IF NOT EXISTS emsp_secrets (
-  connection_id text NOT NULL REFERENCES emsp_connections(id) ON DELETE CASCADE,
-  key text NOT NULL,
-  ciphertext text NOT NULL,
-  updated_at timestamptz NOT NULL DEFAULT now(),
-  PRIMARY KEY (connection_id, key)
-);
-CREATE TABLE IF NOT EXISTS emsp_endpoints (
-  id bigserial PRIMARY KEY,
-  connection_id text NOT NULL REFERENCES emsp_connections(id) ON DELETE CASCADE,
-  platform text NOT NULL,
-  identifier text NOT NULL,
-  role text NOT NULL,
-  url text NOT NULL,
-  raw jsonb NOT NULL,
-  created_at timestamptz NOT NULL DEFAULT now(),
-  UNIQUE (connection_id, platform, identifier, role, url)
-);
-CREATE TABLE IF NOT EXISTS emsp_tokens (
-  connection_id text NOT NULL REFERENCES emsp_connections(id) ON DELETE CASCADE,
-  country_code text NOT NULL,
-  party_id text NOT NULL,
-  uid text NOT NULL,
-  type text NOT NULL,
-  body jsonb NOT NULL,
-  last_updated timestamptz NOT NULL,
+  config jsonb NOT NULL DEFAULT '{}'::jsonb CHECK (jsonb_typeof(config) = 'object'),
+  credentials jsonb NOT NULL DEFAULT '{}'::jsonb CHECK (jsonb_typeof(credentials) = 'object'),
+  secrets jsonb NOT NULL DEFAULT '{}'::jsonb CHECK (jsonb_typeof(secrets) = 'object'),
+  endpoints jsonb NOT NULL DEFAULT '[]'::jsonb CHECK (jsonb_typeof(endpoints) = 'array'),
   created_at timestamptz NOT NULL DEFAULT now(),
   updated_at timestamptz NOT NULL DEFAULT now(),
-  PRIMARY KEY (connection_id, country_code, party_id, uid, type)
+  UNIQUE (leg, profile),
+  UNIQUE (id, leg),
+  CHECK (profile = leg OR profile = 'dual'),
+  CHECK (leg = 'emsp' OR name = ''),
+  CHECK (leg = 'cpo' OR credentials = '{}'::jsonb)
 );
-CREATE TABLE IF NOT EXISTS emsp_locations (
-  connection_id text NOT NULL REFERENCES emsp_connections(id) ON DELETE CASCADE,
-  country_code text NOT NULL,
-  party_id text NOT NULL,
-  object_id text NOT NULL,
-  body jsonb NOT NULL,
-  last_updated timestamptz,
-  created_at timestamptz NOT NULL DEFAULT now(),
-  updated_at timestamptz NOT NULL DEFAULT now(),
-  PRIMARY KEY (connection_id, country_code, party_id, object_id)
-);
-CREATE TABLE IF NOT EXISTS emsp_tariffs (
-  connection_id text NOT NULL REFERENCES emsp_connections(id) ON DELETE CASCADE,
-  country_code text NOT NULL,
-  party_id text NOT NULL,
-  object_id text NOT NULL,
-  body jsonb NOT NULL,
-  last_updated timestamptz,
-  created_at timestamptz NOT NULL DEFAULT now(),
-  updated_at timestamptz NOT NULL DEFAULT now(),
-  PRIMARY KEY (connection_id, country_code, party_id, object_id)
-);
-CREATE TABLE IF NOT EXISTS emsp_sessions (
-  connection_id text NOT NULL REFERENCES emsp_connections(id) ON DELETE CASCADE,
-  country_code text NOT NULL,
-  party_id text NOT NULL,
-  object_id text NOT NULL,
-  body jsonb NOT NULL,
-  last_updated timestamptz,
-  created_at timestamptz NOT NULL DEFAULT now(),
-  updated_at timestamptz NOT NULL DEFAULT now(),
-  PRIMARY KEY (connection_id, country_code, party_id, object_id)
-);
-CREATE TABLE IF NOT EXISTS emsp_cdrs (
-  connection_id text NOT NULL REFERENCES emsp_connections(id) ON DELETE CASCADE,
-  country_code text NOT NULL,
-  party_id text NOT NULL,
-  object_id text NOT NULL,
-  body jsonb NOT NULL,
-  last_updated timestamptz,
-  created_at timestamptz NOT NULL DEFAULT now(),
-  PRIMARY KEY (connection_id, country_code, party_id, object_id)
-);
-CREATE TABLE IF NOT EXISTS emsp_commands (
-  id text PRIMARY KEY,
-  connection_id text NOT NULL REFERENCES emsp_connections(id) ON DELETE CASCADE,
-  type text NOT NULL,
-  status text NOT NULL,
-  request jsonb NOT NULL,
-  direct_response jsonb,
-  async_result jsonb,
-  response_url text NOT NULL,
-  timeout_seconds int,
-  created_at timestamptz NOT NULL DEFAULT now(),
-  updated_at timestamptz NOT NULL DEFAULT now()
-);
-CREATE TABLE IF NOT EXISTS emsp_exchanges (
-  id bigserial PRIMARY KEY,
-  connection_id text NOT NULL REFERENCES emsp_connections(id) ON DELETE CASCADE,
-  direction text NOT NULL,
-  module text NOT NULL,
-  method text NOT NULL,
-  url text NOT NULL,
-  http_status int NOT NULL,
-  request_headers jsonb NOT NULL DEFAULT '{}'::jsonb,
-  request_body jsonb,
-  response_headers jsonb NOT NULL DEFAULT '{}'::jsonb,
-  response_body jsonb,
-  ocpi_status_code int,
-  findings jsonb NOT NULL DEFAULT '[]'::jsonb,
-  duration_ms bigint NOT NULL DEFAULT 0,
-  created_at timestamptz NOT NULL DEFAULT now()
-);
-CREATE INDEX IF NOT EXISTS idx_emsp_exchanges_connection_created ON emsp_exchanges(connection_id, created_at DESC);
-CREATE INDEX IF NOT EXISTS idx_emsp_commands_connection_created ON emsp_commands(connection_id, created_at DESC);
 
--- ============================================================
--- CPO mock (/cpo) and the CPO leg of the dual-role partner
--- ============================================================
+COMMENT ON TABLE partner_console_connections IS 'One row per page and leg: /emsp (emsp, emsp), /cpo (cpo, cpo), /dual (emsp, dual) and (cpo, dual). Reset deletes the row and everything of that connection cascades.';
+COMMENT ON COLUMN partner_console_connections.leg IS 'Role the mock plays: emsp or cpo';
+COMMENT ON COLUMN partner_console_connections.profile IS 'Page: emsp, cpo or dual';
+COMMENT ON COLUMN partner_console_connections.config IS 'Settings typed in the page: URLs, country/party, business name, meter and send cadence';
+COMMENT ON COLUMN partner_console_connections.credentials IS 'CPO leg only: Credentials Evolt answered at registration';
+COMMENT ON COLUMN partner_console_connections.secrets IS 'OCPI tokens sealed with ENCRYPTION_KEY: {"<key>": {"ciphertext", "updated_at"}}';
+COMMENT ON COLUMN partner_console_connections.endpoints IS 'Evolt endpoints from Version Details: [{"identifier", "role", "url", ...}]';
 
-CREATE TABLE IF NOT EXISTS cpo_connections (
-  id text PRIMARY KEY,
-  profile text NOT NULL DEFAULT 'cpo',
-  status text NOT NULL,
-  config jsonb NOT NULL,
-  credentials jsonb NOT NULL DEFAULT '{}'::jsonb,
-  created_at timestamptz NOT NULL DEFAULT now(),
-  updated_at timestamptz NOT NULL DEFAULT now()
-);
-CREATE INDEX IF NOT EXISTS idx_cpo_connections_profile ON cpo_connections(profile);
-CREATE TABLE IF NOT EXISTS cpo_secrets (
-  connection_id text NOT NULL REFERENCES cpo_connections(id) ON DELETE CASCADE,
-  key text NOT NULL,
-  ciphertext text NOT NULL,
-  updated_at timestamptz NOT NULL DEFAULT now(),
-  PRIMARY KEY (connection_id, key)
-);
-CREATE TABLE IF NOT EXISTS cpo_endpoints (
-  id bigserial PRIMARY KEY,
-  connection_id text NOT NULL REFERENCES cpo_connections(id) ON DELETE CASCADE,
-  identifier text NOT NULL,
-  role text NOT NULL,
-  url text NOT NULL,
-  UNIQUE (connection_id, identifier, role, url)
-);
-CREATE TABLE IF NOT EXISTS cpo_objects (
-  connection_id text NOT NULL REFERENCES cpo_connections(id) ON DELETE CASCADE,
-  module text NOT NULL,
+-- ---- objects --------------------------------------------------------------------------------
+
+CREATE TABLE partner_console_objects (
+  connection_id text NOT NULL,
+  leg text NOT NULL,
+  module text NOT NULL CHECK (module IN ('locations', 'tariffs', 'sessions', 'cdrs', 'tokens')),
+  country_code text NOT NULL DEFAULT '',
+  party_id text NOT NULL DEFAULT '',
   object_id text NOT NULL,
-  body jsonb NOT NULL,
+  token_type text NOT NULL DEFAULT '',
+  body jsonb NOT NULL CHECK (jsonb_typeof(body) = 'object'),
+  last_updated timestamptz,
   snapshot jsonb NOT NULL DEFAULT '{}'::jsonb,
-  delivery text NOT NULL,
+  delivery text NOT NULL DEFAULT '',
   findings jsonb NOT NULL DEFAULT '[]'::jsonb,
   cdr_location text NOT NULL DEFAULT '',
+  created_at timestamptz NOT NULL DEFAULT now(),
   updated_at timestamptz NOT NULL DEFAULT now(),
-  PRIMARY KEY (connection_id, module, object_id)
+  PRIMARY KEY (connection_id, module, country_code, party_id, object_id, token_type),
+  FOREIGN KEY (connection_id, leg) REFERENCES partner_console_connections(id, leg) ON DELETE CASCADE,
+  CHECK (token_type = '' OR (leg = 'emsp' AND module = 'tokens')),
+  CHECK (leg = 'emsp' OR (country_code = '' AND party_id = '')),
+  CHECK (leg = 'cpo' OR (snapshot = '{}'::jsonb AND delivery = '' AND findings = '[]'::jsonb AND cdr_location = ''))
 );
-CREATE TABLE IF NOT EXISTS cpo_commands (
-  connection_id text NOT NULL REFERENCES cpo_connections(id) ON DELETE CASCADE,
+
+COMMENT ON TABLE partner_console_objects IS 'OCPI objects of both legs. eMSP leg: what Evolt pushed or the mock pulled, plus the tokens the mock issues. CPO leg: the catalogue the mock sends to Evolt and the tokens it received.';
+COMMENT ON COLUMN partner_console_objects.body IS 'The OCPI object as JSON';
+COMMENT ON COLUMN partner_console_objects.token_type IS 'eMSP tokens only: an OCPI token uid is unique per type';
+COMMENT ON COLUMN partner_console_objects.snapshot IS 'CPO leg only: Location and Tariff captured when a Session started, for pricing';
+COMMENT ON COLUMN partner_console_objects.delivery IS 'CPO leg only: NOT_SENT, SENT, FAILED, RECEIVED, PULLED, ...';
+COMMENT ON COLUMN partner_console_objects.cdr_location IS 'CPO leg only: Location header Evolt answered for a sent CDR';
+
+-- ---- commands -------------------------------------------------------------------------------
+
+CREATE TABLE partner_console_commands (
+  connection_id text NOT NULL,
+  leg text NOT NULL,
   id text NOT NULL,
   type text NOT NULL,
   status text NOT NULL,
   request jsonb NOT NULL,
   response_url text NOT NULL,
+  direct_response jsonb,
+  async_result jsonb,
+  timeout_seconds int,
   result jsonb,
-  created_at timestamptz NOT NULL,
-  updated_at timestamptz NOT NULL,
-  PRIMARY KEY (connection_id, id)
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (connection_id, id),
+  FOREIGN KEY (connection_id, leg) REFERENCES partner_console_connections(id, leg) ON DELETE CASCADE,
+  CHECK (leg = 'emsp' OR (direct_response IS NULL AND async_result IS NULL AND timeout_seconds IS NULL)),
+  CHECK (leg = 'cpo' OR result IS NULL)
 );
-CREATE TABLE IF NOT EXISTS cpo_exchanges (
-  connection_id text NOT NULL REFERENCES cpo_connections(id) ON DELETE CASCADE,
-  id text NOT NULL,
-  payload jsonb NOT NULL,
-  created_at timestamptz NOT NULL,
-  PRIMARY KEY (connection_id, id)
-);
-CREATE INDEX IF NOT EXISTS idx_cpo_exchanges_created ON cpo_exchanges(connection_id, created_at DESC);
+CREATE INDEX partner_console_commands_id_idx ON partner_console_commands(id);
 
--- ============================================================
--- Saved requests (Requests panel on /emsp, /cpo, /dual)
--- ============================================================
+COMMENT ON TABLE partner_console_commands IS 'START/STOP commands. eMSP leg: sent to Evolt. CPO leg: received from Evolt.';
+COMMENT ON COLUMN partner_console_commands.direct_response IS 'eMSP leg only: Evolt''s immediate answer';
+COMMENT ON COLUMN partner_console_commands.async_result IS 'eMSP leg only: the result Evolt posted back later';
+COMMENT ON COLUMN partner_console_commands.result IS 'CPO leg only: the result the mock sent back to Evolt';
 
-CREATE TABLE IF NOT EXISTS request_fixtures (
+-- ---- saved requests -------------------------------------------------------------------------
+
+CREATE TABLE partner_console_saved_requests (
   id text PRIMARY KEY,
-  lane text NOT NULL,
+  lane text NOT NULL CHECK (lane IN ('EMSP', 'CPO', 'DUAL_EMSP', 'DUAL_CPO', 'COMMON')),
   module text NOT NULL,
   name text NOT NULL,
   content text NOT NULL,
@@ -207,14 +130,44 @@ CREATE TABLE IF NOT EXISTS request_fixtures (
   findings jsonb NOT NULL DEFAULT '[]'::jsonb,
   updated_at timestamptz NOT NULL DEFAULT now()
 );
-CREATE TABLE IF NOT EXISTS request_exchanges (
-  id bigserial PRIMARY KEY,
-  fixture_id text NOT NULL REFERENCES request_fixtures(id) ON DELETE CASCADE,
-  request jsonb NOT NULL,
-  response jsonb NOT NULL,
-  status text NOT NULL,
-  duration_ms bigint NOT NULL,
-  created_at timestamptz NOT NULL DEFAULT now()
+
+COMMENT ON TABLE partner_console_saved_requests IS 'Requests saved in the Requests panel. Not tied to a connection, so Reset keeps them.';
+COMMENT ON COLUMN partner_console_saved_requests.lane IS 'Whose token the request is sent with';
+
+-- ---- exchanges ------------------------------------------------------------------------------
+
+CREATE TABLE partner_console_exchanges (
+  seq bigserial PRIMARY KEY,
+  connection_id text REFERENCES partner_console_connections(id) ON DELETE CASCADE,
+  saved_request_id text REFERENCES partner_console_saved_requests(id) ON DELETE CASCADE,
+  exchange_id text,
+  direction text,
+  module text,
+  method text NOT NULL,
+  url text NOT NULL,
+  http_status int,
+  ocpi_status_code int,
+  duration_ms bigint NOT NULL DEFAULT 0,
+  result text,
+  error text,
+  request_headers jsonb,
+  request_body jsonb,
+  response_headers jsonb,
+  response_body jsonb,
+  findings jsonb,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  CHECK ((connection_id IS NULL) <> (saved_request_id IS NULL)),
+  CHECK (connection_id IS NULL OR (direction IS NOT NULL AND module IS NOT NULL AND http_status IS NOT NULL AND result IS NULL AND error IS NULL)),
+  CHECK (saved_request_id IS NULL OR (result IS NOT NULL AND direction IS NULL AND exchange_id IS NULL AND findings IS NULL))
 );
+CREATE UNIQUE INDEX partner_console_exchanges_exchange_id_idx ON partner_console_exchanges(connection_id, exchange_id) WHERE exchange_id IS NOT NULL;
+CREATE INDEX partner_console_exchanges_connection_idx ON partner_console_exchanges(connection_id, created_at DESC);
+CREATE INDEX partner_console_exchanges_saved_request_idx ON partner_console_exchanges(saved_request_id, created_at DESC);
+
+COMMENT ON TABLE partner_console_exchanges IS 'Request/response log: the OCPI traffic of a connection (connection_id), or one send of a saved request (saved_request_id).';
+COMMENT ON COLUMN partner_console_exchanges.exchange_id IS 'CPO leg only: the id the mock gave the exchange';
+COMMENT ON COLUMN partner_console_exchanges.result IS 'Saved request only: RECORDED, PASS, FAIL or ERROR';
+COMMENT ON COLUMN partner_console_exchanges.error IS 'Saved request only: transport error of an ERROR send';
+COMMENT ON COLUMN partner_console_exchanges.findings IS 'OCPI conformance findings of a connection exchange';
 
 COMMIT;

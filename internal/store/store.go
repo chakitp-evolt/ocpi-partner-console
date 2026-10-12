@@ -86,7 +86,7 @@ func (s *Store) EnsureRunProfile(ctx context.Context, profile, defaultPublicURL 
 	run.Status = "SETUP"
 	config := defaultRunConfig(defaultPublicURL)
 	body, _ := json.Marshal(config)
-	_, err = s.db.ExecContext(ctx, `INSERT INTO emsp_connections(id,name,status,config,profile) VALUES($1,$2,$3,$4,$5)`, run.ID, run.Name, run.Status, body, profile)
+	_, err = s.db.ExecContext(ctx, `INSERT INTO partner_console_connections(id,leg,name,status,config,profile) VALUES($1,'emsp',$2,$3,$4,$5)`, run.ID, run.Name, run.Status, body, profile)
 	if err == nil {
 		return s.CurrentRunProfile(ctx, profile)
 	}
@@ -104,7 +104,7 @@ func (s *Store) ResetRunProfile(ctx context.Context, runID, profile, defaultPubl
 		return Run{}, err
 	}
 	defer tx.Rollback()
-	result, err := tx.ExecContext(ctx, `DELETE FROM emsp_connections WHERE id=$1`, runID)
+	result, err := tx.ExecContext(ctx, `DELETE FROM partner_console_connections WHERE id=$1 AND leg='emsp'`, runID)
 	if err != nil {
 		return Run{}, err
 	}
@@ -113,7 +113,7 @@ func (s *Store) ResetRunProfile(ctx context.Context, runID, profile, defaultPubl
 	}
 	run := Run{ID: newID(), Name: "Evolt black-box run", Status: "SETUP"}
 	run.Config, _ = json.Marshal(defaultRunConfig(defaultPublicURL))
-	if _, err := tx.ExecContext(ctx, `INSERT INTO emsp_connections(id,name,status,config,profile) VALUES($1,$2,$3,$4,$5)`, run.ID, run.Name, run.Status, run.Config, profile); err != nil {
+	if _, err := tx.ExecContext(ctx, `INSERT INTO partner_console_connections(id,leg,name,status,config,profile) VALUES($1,'emsp',$2,$3,$4,$5)`, run.ID, run.Name, run.Status, run.Config, profile); err != nil {
 		return Run{}, err
 	}
 	if err := tx.Commit(); err != nil {
@@ -140,7 +140,7 @@ func (s *Store) CurrentRun(ctx context.Context) (Run, error) {
 
 func (s *Store) CurrentRunProfile(ctx context.Context, profile string) (Run, error) {
 	var run Run
-	err := s.db.QueryRowContext(ctx, `SELECT id, name, status, config FROM emsp_connections WHERE profile=$1 ORDER BY created_at LIMIT 1`, profile).Scan(&run.ID, &run.Name, &run.Status, &run.Config)
+	err := s.db.QueryRowContext(ctx, `SELECT id, name, status, config FROM partner_console_connections WHERE leg='emsp' AND profile=$1 ORDER BY created_at LIMIT 1`, profile).Scan(&run.ID, &run.Name, &run.Status, &run.Config)
 	return run, err
 }
 
@@ -149,7 +149,7 @@ func (s *Store) UpdateRun(ctx context.Context, id, name, status string, config a
 	if err != nil {
 		return err
 	}
-	_, err = s.db.ExecContext(ctx, `UPDATE emsp_connections SET name=$2,status=$3,config=$4,updated_at=now() WHERE id=$1`, id, name, status, body)
+	_, err = s.db.ExecContext(ctx, `UPDATE partner_console_connections SET name=$2,status=$3,config=$4,updated_at=now() WHERE id=$1`, id, name, status, body)
 	return err
 }
 
@@ -158,18 +158,8 @@ func (s *Store) UpdateRunAndDeleteSecret(ctx context.Context, id, name, status s
 	if err != nil {
 		return err
 	}
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
-	if _, err := tx.ExecContext(ctx, `UPDATE emsp_connections SET name=$2,status=$3,config=$4,updated_at=now() WHERE id=$1`, id, name, status, body); err != nil {
-		return err
-	}
-	if _, err := tx.ExecContext(ctx, `DELETE FROM emsp_secrets WHERE connection_id=$1 AND key=$2`, id, secretKey); err != nil {
-		return err
-	}
-	return tx.Commit()
+	_, err = s.db.ExecContext(ctx, `UPDATE partner_console_connections SET name=$2,status=$3,config=$4,secrets=secrets-$5::text,updated_at=now() WHERE id=$1`, id, name, status, body, secretKey)
+	return err
 }
 
 func (s *Store) PutSecret(ctx context.Context, runID, key, value string) error {
@@ -179,14 +169,19 @@ func (s *Store) PutSecret(ctx context.Context, runID, key, value string) error {
 	}
 	ciphertext := s.aead.Seal(nonce, nonce, []byte(value), []byte(runID+":"+key))
 	encoded := base64.RawStdEncoding.EncodeToString(ciphertext)
-	_, err := s.db.ExecContext(ctx, `INSERT INTO emsp_secrets(connection_id,key,ciphertext) VALUES($1,$2,$3)
-		ON CONFLICT(connection_id,key) DO UPDATE SET ciphertext=excluded.ciphertext,updated_at=now()`, runID, key, encoded)
-	return err
+	result, err := s.db.ExecContext(ctx, `UPDATE partner_console_connections SET secrets=secrets||jsonb_build_object($2::text,jsonb_build_object('ciphertext',$3::text,'updated_at',now()::text)) WHERE id=$1`, runID, key, encoded)
+	if err != nil {
+		return err
+	}
+	if affected, _ := result.RowsAffected(); affected == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
 }
 
 func (s *Store) GetSecret(ctx context.Context, runID, key string) (string, error) {
 	var encoded string
-	if err := s.db.QueryRowContext(ctx, `SELECT ciphertext FROM emsp_secrets WHERE connection_id=$1 AND key=$2`, runID, key).Scan(&encoded); err != nil {
+	if err := s.db.QueryRowContext(ctx, `SELECT secret.value->>'ciphertext' FROM partner_console_connections, jsonb_each(secrets) AS secret WHERE id=$1 AND secret.key=$2`, runID, key).Scan(&encoded); err != nil {
 		return "", err
 	}
 	return s.decryptPartnerSecret(runID, key, encoded)
@@ -209,31 +204,26 @@ func (s *Store) decryptPartnerSecret(runID, key, encoded string) (string, error)
 }
 
 func (s *Store) ReplaceEndpoints(ctx context.Context, runID, platform string, endpoints []map[string]any) error {
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
-	if _, err := tx.ExecContext(ctx, `DELETE FROM emsp_endpoints WHERE connection_id=$1 AND platform=$2`, runID, platform); err != nil {
-		return err
-	}
+	entries := make([]map[string]any, 0, len(endpoints))
 	for _, endpoint := range endpoints {
-		raw, _ := json.Marshal(endpoint)
-		if _, err := tx.ExecContext(ctx, `INSERT INTO emsp_endpoints(connection_id,platform,identifier,role,url,raw) VALUES($1,$2,$3,$4,$5,$6)`, runID, platform, text(endpoint["identifier"]), text(endpoint["role"]), text(endpoint["url"]), raw); err != nil {
-			return err
-		}
+		entries = append(entries, map[string]any{"platform": platform, "identifier": text(endpoint["identifier"]), "role": text(endpoint["role"]), "url": text(endpoint["url"]), "raw": endpoint})
 	}
-	return tx.Commit()
+	raw, _ := json.Marshal(entries)
+	_, err := s.db.ExecContext(ctx, `UPDATE partner_console_connections SET endpoints=
+		COALESCE((SELECT jsonb_agg(e ORDER BY n) FROM jsonb_array_elements(endpoints) WITH ORDINALITY AS t(e,n) WHERE e->>'platform'<>$2),'[]'::jsonb)
+		|| COALESCE((SELECT jsonb_agg(e||jsonb_build_object('created_at',now()) ORDER BY n) FROM jsonb_array_elements($3::jsonb) WITH ORDINALITY AS t(e,n)),'[]'::jsonb)
+		WHERE id=$1`, runID, platform, raw)
+	return err
 }
 
 func (s *Store) Endpoint(ctx context.Context, runID, identifier, role string) (string, error) {
 	var url string
-	err := s.db.QueryRowContext(ctx, `SELECT url FROM emsp_endpoints WHERE connection_id=$1 AND platform='remote' AND identifier=$2 AND ($3='' OR role=$3) ORDER BY id LIMIT 1`, runID, identifier, role).Scan(&url)
+	err := s.db.QueryRowContext(ctx, `SELECT e->>'url' FROM partner_console_connections, jsonb_array_elements(endpoints) WITH ORDINALITY AS t(e,n) WHERE id=$1 AND e->>'platform'='remote' AND e->>'identifier'=$2 AND ($3='' OR e->>'role'=$3) ORDER BY n LIMIT 1`, runID, identifier, role).Scan(&url)
 	return url, err
 }
 
 func (s *Store) RemoteEndpoints(ctx context.Context, runID string) ([]map[string]any, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT identifier,role,url FROM emsp_endpoints WHERE connection_id=$1 AND platform='remote' ORDER BY id`, runID)
+	rows, err := s.db.QueryContext(ctx, `SELECT e->>'identifier',e->>'role',e->>'url' FROM partner_console_connections, jsonb_array_elements(endpoints) WITH ORDINALITY AS t(e,n) WHERE id=$1 AND e->>'platform'='remote' ORDER BY n`, runID)
 	if err != nil {
 		return nil, err
 	}
@@ -255,15 +245,15 @@ func (s *Store) UpsertToken(ctx context.Context, runID string, body map[string]a
 		return err
 	}
 	raw, _ := json.Marshal(body)
-	_, err = s.db.ExecContext(ctx, `INSERT INTO emsp_tokens(connection_id,country_code,party_id,uid,type,body,last_updated)
-		VALUES($1,$2,$3,$4,$5,$6,$7) ON CONFLICT(connection_id,country_code,party_id,uid,type)
+	_, err = s.db.ExecContext(ctx, `INSERT INTO partner_console_objects(connection_id,leg,module,country_code,party_id,object_id,token_type,body,last_updated)
+		VALUES($1,'emsp','tokens',$2,$3,$4,$5,$6,$7) ON CONFLICT(connection_id,module,country_code,party_id,object_id,token_type)
 		DO UPDATE SET body=excluded.body,last_updated=excluded.last_updated,updated_at=now()`, runID, text(body["country_code"]), text(body["party_id"]), text(body["uid"]), text(body["type"]), raw, updated)
 	return err
 }
 
 func (s *Store) Token(ctx context.Context, runID, uid, tokenType string) (map[string]any, error) {
 	var raw []byte
-	err := s.db.QueryRowContext(ctx, `SELECT body FROM emsp_tokens WHERE connection_id=$1 AND uid=$2 AND type=$3`, runID, uid, tokenType).Scan(&raw)
+	err := s.db.QueryRowContext(ctx, `SELECT body FROM partner_console_objects WHERE connection_id=$1 AND module='tokens' AND object_id=$2 AND token_type=$3`, runID, uid, tokenType).Scan(&raw)
 	var body map[string]any
 	if err == nil {
 		err = json.Unmarshal(raw, &body)
@@ -272,9 +262,9 @@ func (s *Store) Token(ctx context.Context, runID, uid, tokenType string) (map[st
 }
 
 func (s *Store) Tokens(ctx context.Context, runID string, dateFrom, dateTo *time.Time, offset, limit int) ([]map[string]any, int, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT body, count(*) OVER() FROM emsp_tokens WHERE connection_id=$1
+	rows, err := s.db.QueryContext(ctx, `SELECT body, count(*) OVER() FROM partner_console_objects WHERE connection_id=$1 AND module='tokens'
 		AND ($2::timestamptz IS NULL OR last_updated >= $2) AND ($3::timestamptz IS NULL OR last_updated < $3)
-		ORDER BY last_updated,uid OFFSET $4 LIMIT $5`, runID, dateFrom, dateTo, offset, limit)
+		ORDER BY last_updated,object_id OFFSET $4 LIMIT $5`, runID, dateFrom, dateTo, offset, limit)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -296,8 +286,7 @@ func (s *Store) Tokens(ctx context.Context, runID string, dateFrom, dateTo *time
 }
 
 func (s *Store) PutObject(ctx context.Context, runID, module, countryCode, partyID, objectID string, body map[string]any, patch bool) error {
-	table, err := objectTable(module)
-	if err != nil {
+	if err := checkObjectModule(module); err != nil {
 		return err
 	}
 	if module == "cdrs" && patch {
@@ -313,22 +302,22 @@ func (s *Store) PutObject(ctx context.Context, runID, module, countryCode, party
 	}
 	raw, _ := json.Marshal(body)
 	updated, _ := parseTime(body["last_updated"])
+	// CDRs are immutable, so a repeated id fails on the primary key instead of overwriting.
 	if module == "cdrs" {
-		_, err = s.db.ExecContext(ctx, fmt.Sprintf(`INSERT INTO %s(connection_id,country_code,party_id,object_id,body,last_updated) VALUES($1,$2,$3,$4,$5,$6)`, table), runID, countryCode, partyID, objectID, raw, nullableTime(updated))
+		_, err := s.db.ExecContext(ctx, `INSERT INTO partner_console_objects(connection_id,leg,module,country_code,party_id,object_id,body,last_updated) VALUES($1,'emsp',$2,$3,$4,$5,$6,$7)`, runID, module, countryCode, partyID, objectID, raw, nullableTime(updated))
 		return err
 	}
-	_, err = s.db.ExecContext(ctx, fmt.Sprintf(`INSERT INTO %s(connection_id,country_code,party_id,object_id,body,last_updated) VALUES($1,$2,$3,$4,$5,$6)
-		ON CONFLICT(connection_id,country_code,party_id,object_id) DO UPDATE SET body=excluded.body,last_updated=excluded.last_updated,updated_at=now()`, table), runID, countryCode, partyID, objectID, raw, nullableTime(updated))
+	_, err := s.db.ExecContext(ctx, `INSERT INTO partner_console_objects(connection_id,leg,module,country_code,party_id,object_id,body,last_updated) VALUES($1,'emsp',$2,$3,$4,$5,$6,$7)
+		ON CONFLICT(connection_id,module,country_code,party_id,object_id,token_type) DO UPDATE SET body=excluded.body,last_updated=excluded.last_updated,updated_at=now()`, runID, module, countryCode, partyID, objectID, raw, nullableTime(updated))
 	return err
 }
 
 func (s *Store) Object(ctx context.Context, runID, module, countryCode, partyID, objectID string) (map[string]any, error) {
-	table, err := objectTable(module)
-	if err != nil {
+	if err := checkObjectModule(module); err != nil {
 		return nil, err
 	}
 	var raw []byte
-	err = s.db.QueryRowContext(ctx, fmt.Sprintf(`SELECT body FROM %s WHERE connection_id=$1 AND country_code=$2 AND party_id=$3 AND object_id=$4`, table), runID, countryCode, partyID, objectID).Scan(&raw)
+	err := s.db.QueryRowContext(ctx, `SELECT body FROM partner_console_objects WHERE connection_id=$1 AND module=$2 AND country_code=$3 AND party_id=$4 AND object_id=$5 AND token_type=''`, runID, module, countryCode, partyID, objectID).Scan(&raw)
 	var body map[string]any
 	if err == nil {
 		err = json.Unmarshal(raw, &body)
@@ -337,32 +326,31 @@ func (s *Store) Object(ctx context.Context, runID, module, countryCode, partyID,
 }
 
 func (s *Store) DeleteObject(ctx context.Context, runID, module, countryCode, partyID, objectID string) error {
-	table, err := objectTable(module)
-	if err != nil {
+	if err := checkObjectModule(module); err != nil {
 		return err
 	}
 	if module != "tariffs" {
 		return fmt.Errorf("delete unsupported for %s", module)
 	}
-	_, err = s.db.ExecContext(ctx, fmt.Sprintf(`DELETE FROM %s WHERE connection_id=$1 AND country_code=$2 AND party_id=$3 AND object_id=$4`, table), runID, countryCode, partyID, objectID)
+	_, err := s.db.ExecContext(ctx, `DELETE FROM partner_console_objects WHERE connection_id=$1 AND module=$2 AND country_code=$3 AND party_id=$4 AND object_id=$5 AND token_type=''`, runID, module, countryCode, partyID, objectID)
 	return err
 }
 
 func (s *Store) CreateCommand(ctx context.Context, id, runID, commandType, responseURL string, request any) error {
 	raw, _ := json.Marshal(request)
-	_, err := s.db.ExecContext(ctx, `INSERT INTO emsp_commands(id,connection_id,type,status,request,response_url) VALUES($1,$2,$3,'SENT',$4,$5)`, id, runID, commandType, raw, responseURL)
+	_, err := s.db.ExecContext(ctx, `INSERT INTO partner_console_commands(id,connection_id,leg,type,status,request,response_url) VALUES($1,$2,'emsp',$3,'SENT',$4,$5)`, id, runID, commandType, raw, responseURL)
 	return err
 }
 
 func (s *Store) UpdateCommandDirect(ctx context.Context, id, status string, timeout int, response any) error {
 	raw, _ := json.Marshal(response)
-	_, err := s.db.ExecContext(ctx, `UPDATE emsp_commands SET status=$2,direct_response=$3,timeout_seconds=$4,updated_at=now() WHERE id=$1`, id, status, raw, timeout)
+	_, err := s.db.ExecContext(ctx, `UPDATE partner_console_commands SET status=$2,direct_response=$3,timeout_seconds=$4,updated_at=now() WHERE id=$1`, id, status, raw, timeout)
 	return err
 }
 
 func (s *Store) UpdateCommandAsync(ctx context.Context, id, status string, result any) error {
 	raw, _ := json.Marshal(result)
-	_, err := s.db.ExecContext(ctx, `UPDATE emsp_commands SET status=$2,async_result=$3,updated_at=now() WHERE id=$1`, id, status, raw)
+	_, err := s.db.ExecContext(ctx, `UPDATE partner_console_commands SET status=$2,async_result=$3,updated_at=now() WHERE id=$1`, id, status, raw)
 	return err
 }
 
@@ -372,22 +360,22 @@ func (s *Store) AddExchange(ctx context.Context, exchange Exchange) error {
 	resHeaders, _ := json.Marshal(exchange.ResponseHeaders)
 	resBody, _ := json.Marshal(exchange.ResponseBody)
 	findings, _ := json.Marshal(exchange.Findings)
-	_, err := s.db.ExecContext(ctx, `INSERT INTO emsp_exchanges(connection_id,direction,module,method,url,http_status,request_headers,request_body,response_headers,response_body,ocpi_status_code,findings,duration_ms)
+	_, err := s.db.ExecContext(ctx, `INSERT INTO partner_console_exchanges(connection_id,direction,module,method,url,http_status,request_headers,request_body,response_headers,response_body,ocpi_status_code,findings,duration_ms)
 		VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`, exchange.RunID, exchange.Direction, exchange.Module, exchange.Method, exchange.URL, exchange.HTTPStatus, reqHeaders, nullableJSON(reqBody), resHeaders, nullableJSON(resBody), exchange.OCPIStatusCode, findings, exchange.Duration.Milliseconds())
 	return err
 }
 
 func (s *Store) State(ctx context.Context, runID string, revealSecrets bool) (map[string]json.RawMessage, error) {
 	queries := map[string]string{
-		"setup":     `SELECT COALESCE(jsonb_agg(to_jsonb(x)), '[]'::jsonb) FROM (SELECT id,name,status,config,created_at,updated_at FROM emsp_connections WHERE id=$1) x`,
-		"endpoints": `SELECT COALESCE(jsonb_agg(to_jsonb(x)), '[]'::jsonb) FROM (SELECT platform,identifier,role,url,created_at FROM emsp_endpoints WHERE connection_id=$1 ORDER BY id) x`,
-		"tokens":    `SELECT COALESCE(jsonb_agg(to_jsonb(x)), '[]'::jsonb) FROM (SELECT country_code,party_id,uid,type,body,last_updated,updated_at FROM emsp_tokens WHERE connection_id=$1 ORDER BY updated_at DESC) x`,
-		"locations": `SELECT COALESCE(jsonb_agg(to_jsonb(x)), '[]'::jsonb) FROM (SELECT country_code,party_id,object_id,body,last_updated,updated_at FROM emsp_locations WHERE connection_id=$1 ORDER BY updated_at DESC) x`,
-		"tariffs":   `SELECT COALESCE(jsonb_agg(to_jsonb(x)), '[]'::jsonb) FROM (SELECT country_code,party_id,object_id,body,last_updated,updated_at FROM emsp_tariffs WHERE connection_id=$1 ORDER BY updated_at DESC) x`,
-		"sessions":  `SELECT COALESCE(jsonb_agg(to_jsonb(x)), '[]'::jsonb) FROM (SELECT country_code,party_id,object_id,body,last_updated,updated_at FROM emsp_sessions WHERE connection_id=$1 ORDER BY updated_at DESC) x`,
-		"cdrs":      `SELECT COALESCE(jsonb_agg(to_jsonb(x)), '[]'::jsonb) FROM (SELECT country_code,party_id,object_id,body,last_updated,created_at FROM emsp_cdrs WHERE connection_id=$1 ORDER BY created_at DESC) x`,
-		"commands":  `SELECT COALESCE(jsonb_agg(to_jsonb(x)), '[]'::jsonb) FROM (SELECT * FROM emsp_commands WHERE connection_id=$1 ORDER BY created_at DESC LIMIT 100) x`,
-		"exchanges": `SELECT COALESCE(jsonb_agg(to_jsonb(x)), '[]'::jsonb) FROM (SELECT * FROM emsp_exchanges WHERE connection_id=$1 ORDER BY created_at DESC LIMIT 200) x`,
+		"setup":     `SELECT COALESCE(jsonb_agg(to_jsonb(x)), '[]'::jsonb) FROM (SELECT id,name,status,config,created_at,updated_at FROM partner_console_connections WHERE id=$1) x`,
+		"endpoints": `SELECT COALESCE(jsonb_agg(e-'raw' ORDER BY n), '[]'::jsonb) FROM partner_console_connections, jsonb_array_elements(endpoints) WITH ORDINALITY AS t(e,n) WHERE id=$1`,
+		"tokens":    `SELECT COALESCE(jsonb_agg(to_jsonb(x)), '[]'::jsonb) FROM (SELECT country_code,party_id,object_id AS uid,token_type AS type,body,last_updated,updated_at FROM partner_console_objects WHERE connection_id=$1 AND module='tokens' ORDER BY updated_at DESC) x`,
+		"locations": objectStateQuery("locations"),
+		"tariffs":   objectStateQuery("tariffs"),
+		"sessions":  objectStateQuery("sessions"),
+		"cdrs":      `SELECT COALESCE(jsonb_agg(to_jsonb(x)), '[]'::jsonb) FROM (SELECT country_code,party_id,object_id,body,last_updated,created_at FROM partner_console_objects WHERE connection_id=$1 AND module='cdrs' ORDER BY created_at DESC) x`,
+		"commands":  `SELECT COALESCE(jsonb_agg(to_jsonb(x)), '[]'::jsonb) FROM (SELECT id,connection_id,type,status,request,direct_response,async_result,response_url,timeout_seconds,created_at,updated_at FROM partner_console_commands WHERE connection_id=$1 ORDER BY created_at DESC LIMIT 100) x`,
+		"exchanges": `SELECT COALESCE(jsonb_agg(to_jsonb(x)), '[]'::jsonb) FROM (SELECT seq AS id,connection_id,direction,module,method,url,http_status,request_headers,request_body,response_headers,response_body,ocpi_status_code,findings,duration_ms,created_at FROM partner_console_exchanges WHERE connection_id=$1 ORDER BY created_at DESC LIMIT 200) x`,
 	}
 	result := make(map[string]json.RawMessage, len(queries)+1)
 	for name, query := range queries {
@@ -409,8 +397,12 @@ func (s *Store) State(ctx context.Context, runID string, revealSecrets bool) (ma
 // row shape, the same fingerprints, decrypted only when the operator asked to see them. Both halves
 // exist because the two runs are separate registrations with separate token pairs, and a rotation
 // has to be provable on each of them on its own.
+func objectStateQuery(module string) string {
+	return `SELECT COALESCE(jsonb_agg(to_jsonb(x)), '[]'::jsonb) FROM (SELECT country_code,party_id,object_id,body,last_updated,updated_at FROM partner_console_objects WHERE connection_id=$1 AND module='` + module + `' ORDER BY updated_at DESC) x`
+}
+
 func (s *Store) partnerSecretTable(ctx context.Context, runID string, reveal bool) (json.RawMessage, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT key,ciphertext,updated_at::text FROM emsp_secrets WHERE connection_id=$1 ORDER BY key`, runID)
+	rows, err := s.db.QueryContext(ctx, `SELECT secret.key,secret.value->>'ciphertext',secret.value->>'updated_at' FROM partner_console_connections, jsonb_each(secrets) AS secret WHERE id=$1 ORDER BY secret.key`, runID)
 	if err != nil {
 		return nil, err
 	}
@@ -459,18 +451,13 @@ func Merge(current, patch map[string]any, appendChargingPeriods bool) map[string
 	return result
 }
 
-func objectTable(module string) (string, error) {
+// checkObjectModule limits the eMSP receivers to the modules Evolt pushes as CPO.
+func checkObjectModule(module string) error {
 	switch module {
-	case "locations":
-		return "emsp_locations", nil
-	case "tariffs":
-		return "emsp_tariffs", nil
-	case "sessions":
-		return "emsp_sessions", nil
-	case "cdrs":
-		return "emsp_cdrs", nil
+	case "locations", "tariffs", "sessions", "cdrs":
+		return nil
 	default:
-		return "", fmt.Errorf("unsupported object module %q", module)
+		return fmt.Errorf("unsupported object module %q", module)
 	}
 }
 
