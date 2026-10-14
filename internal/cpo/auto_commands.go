@@ -31,11 +31,12 @@ func (c *Controller) apiAutomation(w http.ResponseWriter, r *http.Request) {
 		IdleUnplugAfterSeconds int     `json:"idle_unplug_after_seconds"`
 		Rate                   float64 `json:"rate_kwh_per_hour"`
 		// Omitted fields keep their current value, so a client that does not know them changes nothing.
-		ParkingAtUnplugOnly   *bool `json:"parking_at_unplug_only"`
-		StopAtMaxPrice        *bool `json:"stop_at_max_price"`
-		StopAtMaxPriceExact   *bool `json:"stop_at_max_price_exact"`
-		PeriodIntervalSeconds *int  `json:"period_interval_seconds"`
-		SendIntervalSeconds   *int  `json:"send_interval_seconds"`
+		ParkingAtUnplugOnly   *bool   `json:"parking_at_unplug_only"`
+		StopAtMaxPrice        *bool   `json:"stop_at_max_price"`
+		StopAtMaxPriceExact   *bool   `json:"stop_at_max_price_exact"`
+		MaxPriceMode          *string `json:"max_price_mode"`
+		PeriodIntervalSeconds *int    `json:"period_interval_seconds"`
+		SendIntervalSeconds   *int    `json:"send_interval_seconds"`
 	}
 	if err := decodeJSON(r, &input); err != nil {
 		writeError(w, http.StatusBadRequest, err)
@@ -51,6 +52,10 @@ func (c *Controller) apiAutomation(w http.ResponseWriter, r *http.Request) {
 	}
 	if input.PeriodIntervalSeconds != nil && (*input.PeriodIntervalSeconds < minPeriodInterval || *input.PeriodIntervalSeconds > maxPeriodInterval) {
 		writeError(w, http.StatusUnprocessableEntity, fmt.Errorf("period_interval_seconds must be between %d and %d", minPeriodInterval, maxPeriodInterval))
+		return
+	}
+	if input.MaxPriceMode != nil && !validMaxPriceMode(*input.MaxPriceMode) {
+		writeError(w, http.StatusUnprocessableEntity, fmt.Errorf("max_price_mode must be %s, %s or %s", maxPriceFreezeAll, maxPriceTotalOnly, maxPricePerSide))
 		return
 	}
 	if input.SendIntervalSeconds != nil && (*input.SendIntervalSeconds < minSendInterval || *input.SendIntervalSeconds > maxSendInterval) {
@@ -75,6 +80,9 @@ func (c *Controller) apiAutomation(w http.ResponseWriter, r *http.Request) {
 	if input.StopAtMaxPriceExact != nil {
 		c.state.Config.StopAtMaxPriceExact = *input.StopAtMaxPriceExact
 	}
+	if input.MaxPriceMode != nil {
+		c.state.Config.MaxPriceMode = *input.MaxPriceMode
+	}
 	if input.PeriodIntervalSeconds != nil {
 		c.state.Config.PeriodIntervalSeconds = *input.PeriodIntervalSeconds
 	}
@@ -90,7 +98,7 @@ func (c *Controller) apiAutomation(w http.ResponseWriter, r *http.Request) {
 		c.stopAllAutoRuns()
 	}
 	c.resumeAutoRuns()
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "enabled": input.Enabled, "test_idle_fee": input.TestIdleFee, "idle_unplug_after_seconds": input.IdleUnplugAfterSeconds, "rate_kwh_per_hour": input.Rate, "parking_at_unplug_only": config.ParkingAtUnplugOnly, "stop_at_max_price": config.StopAtMaxPrice, "stop_at_max_price_exact": config.StopAtMaxPriceExact, "period_interval_seconds": config.periodInterval().Seconds(), "send_interval_seconds": config.sendInterval().Seconds()})
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "enabled": input.Enabled, "test_idle_fee": input.TestIdleFee, "idle_unplug_after_seconds": input.IdleUnplugAfterSeconds, "rate_kwh_per_hour": input.Rate, "parking_at_unplug_only": config.ParkingAtUnplugOnly, "stop_at_max_price": config.StopAtMaxPrice, "stop_at_max_price_exact": config.StopAtMaxPriceExact, "max_price_mode": maxPriceModeOf(config.MaxPriceMode), "period_interval_seconds": config.periodInterval().Seconds(), "send_interval_seconds": config.sendInterval().Seconds()})
 }
 
 func (c *Controller) autoCommand(commandID string) {
@@ -549,7 +557,7 @@ func (c *Controller) maxPriceStop(record *Record, target float64, at time.Time, 
 		t, kwh := point(share)
 		body := cloneMap(record.Body)
 		body["kwh"] = kwh
-		price := priceSessionWithParking(tariff, tariffID, sessionSpans(body, t), startAt.In(zone), t, 0)
+		price := priceSessionAs(c.state.Config.MaxPriceMode, tariff, tariffID, sessionSpans(body, t), startAt.In(zone), t, 0)
 		return reachedMaxPrice(tariff, price.totalCost())
 	}
 	if !reached(1) {

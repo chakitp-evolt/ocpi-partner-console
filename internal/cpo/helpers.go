@@ -234,7 +234,7 @@ func (c *Controller) apiSessionAction(w http.ResponseWriter, r *http.Request) {
 			cdr["tariffs"] = []any{cloneMap(tariff)}
 			startAt, startErr := parseOCPITime(fieldText(record.Body, "start_date_time"))
 			if startErr == nil {
-				price := priceSessionWithParking(tariff, tariffID, sessionSpans(record.Body, parkingAt), startAt.In(zone), parkingAt, parkingHours)
+				price := priceSessionAs(c.state.Config.MaxPriceMode, tariff, tariffID, sessionSpans(record.Body, parkingAt), startAt.In(zone), parkingAt, parkingHours)
 				for _, line := range price.Lines {
 					cost := map[string]any{"excl_vat": line.ExclVAT, "incl_vat": line.InclVAT}
 					switch line.Dimension {
@@ -302,7 +302,7 @@ func (c *Controller) meterUpdate(record *Record, increment float64, complete boo
 		}
 		record.Body["charging_periods"] = append(periods, added...)
 	}
-	price := priceSessionWithParking(tariff, tariffID, sessionSpans(record.Body, at), startTime.In(zone), at, 0)
+	price := priceSessionAs(c.state.Config.MaxPriceMode, tariff, tariffID, sessionSpans(record.Body, at), startTime.In(zone), at, 0)
 	if price.Note == "" {
 		price.Note = note
 	}
@@ -350,6 +350,7 @@ func (c *Controller) apiChargingPreview(w http.ResponseWriter, r *http.Request) 
 	if tariff != nil {
 		tariff = cloneMap(tariff)
 	}
+	maxPriceMode := c.state.Config.MaxPriceMode
 	c.mu.RUnlock()
 	if live > number(body["kwh"]) {
 		body["kwh"] = live
@@ -363,7 +364,7 @@ func (c *Controller) apiChargingPreview(w http.ResponseWriter, r *http.Request) 
 	if at.Before(startAt) {
 		at = startAt
 	}
-	price := priceSessionWithParking(tariff, tariffID, sessionSpans(body, at), startAt.In(zone), at, 0)
+	price := priceSessionAs(maxPriceMode, tariff, tariffID, sessionSpans(body, at), startAt.In(zone), at, 0)
 	if price.Note == "" {
 		price.Note = note
 	}

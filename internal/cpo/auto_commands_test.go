@@ -279,10 +279,13 @@ func TestAutoMeterStopsAtMaxPrice(t *testing.T) {
 	for _, tc := range []struct {
 		name                  string
 		stopAtMaxPrice, exact bool
+		mode                  string
 	}{
-		{"report stop completes on the tick that saw max_price", true, false},
-		{"exact stop completes where the total met max_price", true, true},
-		{"without the switch the charge continues at max_price", false, false},
+		{"report stop completes on the tick that saw max_price", true, false, ""},
+		{"exact stop completes where the total met max_price", true, true, ""},
+		{"without the switch the charge continues at max_price", false, false, ""},
+		{"total only the charge continues at 0.19/0.20", false, false, maxPriceTotalOnly},
+		{"per side the charge continues at 0.20/0.20", false, false, maxPricePerSide},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var peerURL string
@@ -302,6 +305,7 @@ func TestAutoMeterStopsAtMaxPrice(t *testing.T) {
 			c.state.Config.TestIdleFee = true
 			c.state.Config.StopAtMaxPrice = tc.stopAtMaxPrice
 			c.state.Config.StopAtMaxPriceExact = tc.exact
+			c.state.Config.MaxPriceMode = tc.mode
 			c.state.Config.AutoMeterRateKWh = 7.2
 			c.state.Endpoints = []Endpoint{
 				{Identifier: "sessions", Role: "RECEIVER", URL: peer.URL + "/sessions"},
@@ -323,8 +327,8 @@ func TestAutoMeterStopsAtMaxPrice(t *testing.T) {
 				c.mu.Unlock()
 				t.Fatalf("auto START did not create a Session: %+v", start.Result)
 			}
-			// The 15 s tick reaches 0.03 kWh at 7.50/kWh (0.22/0.24), past max_price 0.20/0.20. The parking
-			// price proves the stop skips idle even when idle testing is on.
+			// The 15 s tick reaches 0.03 kWh at 7.50/kWh (0.22/0.24), past max_price 0.20/0.20, so the price
+			// freezes where incl_vat met 0.20. The parking price proves the stop skips idle with idle testing on.
 			tariff, _ := session.Snapshot["tariff"].(map[string]any)
 			tariff["max_price"] = map[string]any{"excl_vat": 0.2, "incl_vat": 0.2}
 			elements, _ := tariff["elements"].([]any)
@@ -338,10 +342,11 @@ func TestAutoMeterStopsAtMaxPrice(t *testing.T) {
 			body := c.state.Objects["sessions"][sessionID].Body
 			cdr := c.state.Objects["cdrs"]["CDR-"+sessionID]
 			cost, _ := body["total_cost"].(map[string]any)
-			// Stopping at the moment incl_vat meets 0.20 leaves excl_vat at 0.19; the tick caps both sides.
-			wantExcl := 0.2
-			if tc.exact {
-				wantExcl = 0.19
+			// Frozen where incl_vat met 0.20, excl_vat stays at 0.19 whichever way the charge goes on; per
+			// side, excl_vat runs on to its own 0.20.
+			wantExcl := 0.19
+			if tc.mode == maxPricePerSide {
+				wantExcl = 0.2
 			}
 			if number(cost["excl_vat"]) != wantExcl || number(cost["incl_vat"]) != 0.2 {
 				t.Errorf("total_cost = %v, want %.2f/0.20", cost, wantExcl)
@@ -359,13 +364,12 @@ func TestAutoMeterStopsAtMaxPrice(t *testing.T) {
 				t.Errorf("Session status = %s, want COMPLETED", fieldText(body, "status"))
 			}
 			// Exact: incl_vat meets 0.20 once the 1 Wh step reaches 25 Wh (0.025 x 8.025 = 0.2006), past
-			// 0.024 kWh at 12 s. Report: the stop lands on the 15 s tick at 0.03 kWh, lines above the total.
+			// 0.024 kWh at 12 s. Report: the stop lands on the 15 s tick at 0.03 kWh. The lines stay frozen at the total.
 			wantMinKWh, wantMaxKWh, wantEnd := 0.03, 0.03, 15*time.Second
-			wantEnergy := map[string]float64{"excl_vat": 0.22, "incl_vat": 0.24}
 			if tc.exact {
 				wantMinKWh, wantMaxKWh, wantEnd = 0.024001, 0.0241, 12*time.Second
-				wantEnergy = map[string]float64{"excl_vat": 0.19, "incl_vat": 0.2}
 			}
+			wantEnergy := map[string]float64{"excl_vat": 0.19, "incl_vat": 0.2}
 			if kwh := number(body["kwh"]); kwh < wantMinKWh || kwh > wantMaxKWh {
 				t.Errorf("meter stopped at %g kWh, want %g..%g", kwh, wantMinKWh, wantMaxKWh)
 			}
@@ -458,6 +462,108 @@ func TestMeterAdvanceStopsAtMaxPrice(t *testing.T) {
 			}
 			if cdr == nil || cdr.Delivery != "SENT" {
 				t.Errorf("CDR not sent: %+v", cdr)
+			}
+		})
+	}
+}
+
+func TestIdleEndsAtMaxPrice(t *testing.T) {
+	for _, tc := range []struct {
+		name          string
+		parkAtUnplug  bool
+		stopAtMaxOn   bool
+		wantCompleted bool
+	}{
+		{"parking reported each tick ends at max_price", false, true, true},
+		{"parking held until unplug ends at max_price", true, true, true},
+		{"without the switch the parked Session waits for the unplug", false, false, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var peerURL string
+			peer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				location := ""
+				if r.Method == http.MethodPost && r.URL.Path == "/cdrs" {
+					location = peerURL + "/cdrs/stored"
+				}
+				writePeerResponse(w, r, http.StatusOK, nil, location)
+			}))
+			defer peer.Close()
+			peerURL = peer.URL
+			c := New(peer.URL)
+			c.mu.Lock()
+			c.state.TokenC = "test-token"
+			c.state.Config.AutoCommandFlow = true
+			c.state.Config.TestIdleFee = true
+			c.state.Config.StopAtMaxPrice = tc.stopAtMaxOn
+			c.state.Config.ParkingAtUnplugOnly = tc.parkAtUnplug
+			c.state.Config.AutoMeterRateKWh = 7.2
+			c.state.Endpoints = []Endpoint{
+				{Identifier: "sessions", Role: "RECEIVER", URL: peer.URL + "/sessions"},
+				{Identifier: "cdrs", Role: "RECEIVER", URL: peer.URL + "/cdrs"},
+				{Identifier: "locations", Role: "RECEIVER", URL: peer.URL + "/locations"},
+			}
+			start := &CommandRecord{ID: "start-1", Type: "START_SESSION", Request: map[string]any{
+				"response_url": peer.URL + "/callback/start", "location_id": "BKK-SILOM", "evse_uid": "SIL-EVSE-1",
+				"token": map[string]any{"country_code": "TH", "party_id": "EVT", "uid": "TEST-1", "type": "RFID", "contract_id": "TH-EVT-C1"},
+			}, ResponseURL: peer.URL + "/callback/start"}
+			c.state.Commands[start.ID] = start
+			c.mu.Unlock()
+			c.autoStartCommand(t.Context(), start)
+
+			// Charging stays under max_price 0.50/0.50; a minute parked at 600/h passes it.
+			c.mu.Lock()
+			sessionID := fieldText(start.Result, "session_id")
+			session := c.state.Objects["sessions"][sessionID]
+			tariff, _ := session.Snapshot["tariff"].(map[string]any)
+			tariff["max_price"] = map[string]any{"excl_vat": 0.5, "incl_vat": 0.5}
+			elements, _ := tariff["elements"].([]any)
+			tariff["elements"] = append(elements, map[string]any{"price_components": []any{map[string]any{"type": "PARKING_TIME", "price": 600.0, "vat": 7.0, "step_size": 1}}})
+			session.Body["last_updated"] = time.Now().Add(-5 * time.Second).UTC().Format(time.RFC3339Nano)
+			stop := &CommandRecord{ID: "stop-1", Type: "STOP_SESSION", Request: map[string]any{"session_id": sessionID}, ResponseURL: peer.URL + "/callback/stop"}
+			c.state.Commands[stop.ID] = stop
+			c.mu.Unlock()
+			c.autoStopCommand(t.Context(), stop)
+			c.stopAutoRun(sessionID)
+			if fieldText(stop.Result, "idle_started_at") == "" {
+				t.Fatalf("STOP did not start idle: %+v", stop.Result)
+			}
+
+			// A minute parked: the idle started a minute ago, as the unplug prices the parking up to now.
+			c.mu.Lock()
+			stop.Result["idle_started_at"] = ocpi.FormatTime(time.Now().Add(-time.Minute).UTC())
+			c.mu.Unlock()
+			continued := c.advanceAutoMeter(sessionID, time.Now())
+			if continued == tc.wantCompleted {
+				t.Errorf("advanceAutoMeter = %v, want %v", continued, !tc.wantCompleted)
+			}
+			deadline := time.Now().Add(2 * time.Second)
+			var status string
+			var cdr *Record
+			for {
+				c.mu.RLock()
+				status = fieldText(c.state.Objects["sessions"][sessionID].Body, "status")
+				cdr = c.state.Objects["cdrs"]["CDR-"+sessionID]
+				c.mu.RUnlock()
+				if !tc.wantCompleted || status == "COMPLETED" && cdr != nil && cdr.Delivery == "SENT" || time.Now().After(deadline) {
+					break
+				}
+				time.Sleep(10 * time.Millisecond)
+			}
+			if !tc.wantCompleted {
+				if status != "ACTIVE" || cdr != nil {
+					t.Fatalf("Session = %s, CDR %v; want ACTIVE until the unplug", status, cdr != nil)
+				}
+				return
+			}
+			if status != "COMPLETED" || cdr == nil || cdr.Delivery != "SENT" {
+				t.Fatalf("Session = %s, CDR %+v; want COMPLETED with the CDR sent", status, cdr)
+			}
+			cost, _ := cdr.Body["total_cost"].(map[string]any)
+			if number(cost["incl_vat"]) != 0.5 {
+				t.Errorf("CDR total_cost = %v, want incl_vat at the 0.50 max_price", cost)
+			}
+			if stop.Result["automation_error"] != nil {
+				t.Errorf("automation error: %v", stop.Result["automation_error"])
 			}
 		})
 	}

@@ -133,7 +133,7 @@ func (c *Controller) apiParkingPreview(w http.ResponseWriter, r *http.Request) {
 	if snapshot, ok := stop.Result["tariff_snapshot"].(map[string]any); ok {
 		tariff, tariffID = snapshot, fieldText(snapshot, "id")
 	}
-	price := priceSessionWithParking(tariff, tariffID, sessionSpans(record.Body, idleAt), startAt.In(zone), idleAt, parkingHours)
+	price := priceSessionAs(c.state.Config.MaxPriceMode, tariff, tariffID, sessionSpans(record.Body, idleAt), startAt.In(zone), idleAt, parkingHours)
 	c.mu.RUnlock()
 	parkingCost := map[string]any{"excl_vat": 0.0, "incl_vat": 0.0}
 	for _, line := range price.Lines {
@@ -298,7 +298,7 @@ func (c *Controller) parkingUpdate(record *Record, stop *CommandRecord, at time.
 	}
 	kwh := number(record.Body["kwh"])
 	parkingHours := at.Sub(idleAt).Hours()
-	price := priceSessionWithParking(tariff, tariffID, sessionSpans(record.Body, idleAt), startAt.In(zone), idleAt, parkingHours)
+	price := priceSessionAs(c.state.Config.MaxPriceMode, tariff, tariffID, sessionSpans(record.Body, idleAt), startAt.In(zone), idleAt, parkingHours)
 	if price.Note == "" {
 		price.Note = note
 	}
@@ -341,13 +341,19 @@ func (c *Controller) advanceParking(sessionID string, at time.Time) bool {
 		c.mu.Unlock()
 		return false
 	}
+	stopID := stop.ID
 	if c.state.Config.ParkingAtUnplugOnly {
+		atMax := c.idleAtMaxPriceLocked(record, stop, at)
 		c.mu.Unlock()
+		if atMax {
+			c.unplugAtMaxPrice(sessionID, stopID)
+			return false
+		}
 		return true
 	}
-	stopID := stop.ID
 	flush := c.state.Config.periodDue(at, periodsEnd(record.Body))
 	patch, _, _, err := c.parkingUpdate(record, stop, at, flush)
+	atMax := err == nil && c.idleAtMaxPriceLocked(record, stop, at)
 	c.mu.Unlock()
 	if err != nil {
 		c.recordAutoError(stopID, err)
@@ -360,7 +366,33 @@ func (c *Controller) advanceParking(sessionID string, at time.Time) bool {
 		c.recordAutoError(stopID, fmt.Errorf("parking Session PATCH failed: %s", recorder.Body.String()))
 		return false
 	}
+	if atMax {
+		c.unplugAtMaxPrice(sessionID, stopID)
+		return false
+	}
 	return true
+}
+
+// idleAtMaxPriceLocked reports whether a parked Session set to stop at max_price has reached it by at.
+// Caller holds c.mu.
+func (c *Controller) idleAtMaxPriceLocked(record *Record, stop *CommandRecord, at time.Time) bool {
+	if !c.state.Config.StopAtMaxPrice {
+		return false
+	}
+	idleAt, err := parseOCPITime(fieldText(stop.Result, "idle_started_at"))
+	if err != nil || at.Before(idleAt) {
+		return false
+	}
+	startAt, err := parseOCPITime(fieldText(record.Body, "start_date_time"))
+	if err != nil {
+		return false
+	}
+	tariffID, tariff, zone, _ := c.tariffForSession(record.Body)
+	if snapshot, ok := stop.Result["tariff_snapshot"].(map[string]any); ok {
+		tariff, tariffID = snapshot, fieldText(snapshot, "id")
+	}
+	price := priceSessionAs(c.state.Config.MaxPriceMode, tariff, tariffID, sessionSpans(record.Body, idleAt), startAt.In(zone), idleAt, at.Sub(idleAt).Hours())
+	return reachedMaxPrice(tariff, price.totalCost())
 }
 
 func (c *Controller) finishUnplug(w http.ResponseWriter, r *http.Request, sessionID, stopID string, patch map[string]any, parkingHours float64, price sessionPrice) {

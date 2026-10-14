@@ -205,6 +205,7 @@ func TestTariffSelectionSkipsTariffsOfAnotherTypeOrOutsideTheirValidity(t *testi
 }
 
 // OCPI 2.2.1 §11.3.1.1 examples: max_price 10.00/11.00 over a 0.50 start fee and 0.25/kWh, and min_price 0.50/0.55.
+// With the start fee at 20% VAT and energy at 10%, incl_vat meets 11.00 first, so the session freezes at 9.95/11.00.
 func TestMinAndMaxPriceBoundTheSessionTotal(t *testing.T) {
 	at := time.Date(2026, 10, 5, 12, 0, 0, 0, time.UTC)
 	capped := map[string]any{
@@ -214,8 +215,16 @@ func TestMinAndMaxPriceBoundTheSessionTotal(t *testing.T) {
 			map[string]any{"type": "ENERGY", "price": 0.25, "vat": 10.0, "step_size": 1},
 		}}},
 	}
-	if price := priceSession(capped, "T", 50, 1, at); price.ExclVAT != 10 || price.InclVAT != 11 {
-		t.Fatalf("50 kWh = %v / %v, want the 10.00 / 11.00 ceiling", price.ExclVAT, price.InclVAT)
+	price := priceSession(capped, "T", 50, 1, at)
+	if price.ExclVAT != 9.95 || price.InclVAT != 11 {
+		t.Fatalf("50 kWh = %v / %v, want 9.95 / 11.00 frozen where incl_vat met the ceiling", price.ExclVAT, price.InclVAT)
+	}
+	lineExcl, lineIncl := 0.0, 0.0
+	for _, line := range price.Lines {
+		lineExcl, lineIncl = lineExcl+line.ExclVAT, lineIncl+line.InclVAT
+	}
+	if roundMoney(lineExcl) != price.ExclVAT || roundMoney(lineIncl) != price.InclVAT {
+		t.Fatalf("lines add up to %v / %v, want the total %v / %v", roundMoney(lineExcl), roundMoney(lineIncl), price.ExclVAT, price.InclVAT)
 	}
 	if price := priceSession(capped, "T", 30, 1, at); price.ExclVAT != 8 || price.InclVAT != 8.85 {
 		t.Fatalf("30 kWh = %v / %v, want 8.00 / 8.85 below the ceiling", price.ExclVAT, price.InclVAT)
@@ -250,5 +259,72 @@ func TestChargingPeriodsAreCutWhereATariffElementChanges(t *testing.T) {
 	}
 	if got := sumDimension(periods, "ENERGY"); got < 17.999999 || got > 18.000001 {
 		t.Fatalf("periods carry %v kWh, want all 18", got)
+	}
+}
+
+// A short charge that meets max_price 60/60 while parked: every line freezes there, the total keeps the 7%
+// ratio instead of 60/60, and the lines add up to it exactly.
+func TestMaxPriceFreezesEveryLineWhileParked(t *testing.T) {
+	start := time.Date(2026, 10, 12, 15, 50, 9, 0, time.UTC)
+	tariff := map[string]any{
+		"max_price": map[string]any{"excl_vat": 60.0, "incl_vat": 60.0},
+		"elements": []any{map[string]any{"price_components": []any{
+			map[string]any{"type": "ENERGY", "price": 90.0, "vat": 7.0, "step_size": 1},
+			map[string]any{"type": "TIME", "price": 120.0, "vat": 7.0, "step_size": 60},
+			map[string]any{"type": "PARKING_TIME", "price": 80.0, "vat": 7.0, "step_size": 60},
+		}}},
+	}
+	parkingAt := start.Add(160 * time.Second)
+	spans := []chargeSpan{{Start: start, End: parkingAt, KWh: 0.318616}}
+	uncapped := priceLines(tariff, "T", spans, start, parkingAt, 0.5)
+	if uncapped.InclVAT <= 60 || uncapped.ExclVAT <= 60 {
+		t.Fatalf("setup: uncapped %v / %v must pass max_price on both sides", uncapped.ExclVAT, uncapped.InclVAT)
+	}
+	price := priceSessionWithParking(tariff, "T", spans, start, parkingAt, 0.5)
+	if price.InclVAT != 60 || price.ExclVAT < 56.06 || price.ExclVAT > 56.08 {
+		t.Fatalf("total = %v / %v, want about 56.07 / 60.00", price.ExclVAT, price.InclVAT)
+	}
+	byDimension := map[string]float64{}
+	lineExcl, lineIncl := 0.0, 0.0
+	for _, line := range price.Lines {
+		byDimension[line.Dimension] += line.InclVAT
+		lineExcl, lineIncl = lineExcl+line.ExclVAT, lineIncl+line.InclVAT
+	}
+	if roundMoney(lineExcl) != price.ExclVAT || roundMoney(lineIncl) != price.InclVAT {
+		t.Fatalf("lines add up to %v / %v, want the total %v / %v", roundMoney(lineExcl), roundMoney(lineIncl), price.ExclVAT, price.InclVAT)
+	}
+	for _, line := range uncapped.Lines {
+		if line.Dimension == "PARKING_TIME" && byDimension["PARKING_TIME"] >= line.InclVAT {
+			t.Errorf("parking %v incl did not freeze below the %v the full stay prices", byDimension["PARKING_TIME"], line.InclVAT)
+		}
+	}
+
+	// Per side, as a partner reading the spec to the letter may: both sides stop at 60 and the lines run on.
+	perSide := priceSessionAs(maxPricePerSide, tariff, "T", spans, start, parkingAt, 0.5)
+	if perSide.ExclVAT != 60 || perSide.InclVAT != 60 {
+		t.Fatalf("per side total = %v / %v, want 60 / 60", perSide.ExclVAT, perSide.InclVAT)
+	}
+	sideIncl := 0.0
+	for _, line := range perSide.Lines {
+		sideIncl += line.InclVAT
+	}
+	if roundMoney(sideIncl) != uncapped.InclVAT {
+		t.Fatalf("per side lines = %v, want the uncapped %v", roundMoney(sideIncl), uncapped.InclVAT)
+	}
+	if frozen := priceSessionAs("", tariff, "T", spans, start, parkingAt, 0.5); frozen.InclVAT != price.InclVAT || frozen.ExclVAT != price.ExclVAT {
+		t.Fatalf("an unset mode = %v / %v, want the frozen %v / %v", frozen.ExclVAT, frozen.InclVAT, price.ExclVAT, price.InclVAT)
+	}
+
+	// Total only: the total freezes like FREEZE_ALL, the lines run on like PER_SIDE.
+	totalOnly := priceSessionAs(maxPriceTotalOnly, tariff, "T", spans, start, parkingAt, 0.5)
+	if totalOnly.ExclVAT != price.ExclVAT || totalOnly.InclVAT != price.InclVAT {
+		t.Fatalf("total only = %v / %v, want the frozen %v / %v", totalOnly.ExclVAT, totalOnly.InclVAT, price.ExclVAT, price.InclVAT)
+	}
+	onlyIncl := 0.0
+	for _, line := range totalOnly.Lines {
+		onlyIncl += line.InclVAT
+	}
+	if roundMoney(onlyIncl) != uncapped.InclVAT {
+		t.Fatalf("total only lines = %v, want the uncapped %v", roundMoney(onlyIncl), uncapped.InclVAT)
 	}
 }

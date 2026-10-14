@@ -50,6 +50,15 @@ func (c *Controller) startIdleRun(sessionID, commandID string, unplugAt time.Tim
 	}()
 }
 
+// unplugAtMaxPrice ends a parked Session that reached max_price, off the meter loop that is about to stop.
+func (c *Controller) unplugAtMaxPrice(sessionID, stopID string) {
+	go func() {
+		if _, err := c.callSessionAction(context.Background(), "unplug", map[string]any{"session_id": sessionID}); err != nil {
+			c.recordAutoError(stopID, fmt.Errorf("unplug at max_price failed: %w", err))
+		}
+	}()
+}
+
 func (c *Controller) cancelIdleRun(sessionID string) {
 	c.autoMu.Lock()
 	if run := c.idleRuns[sessionID]; run != nil {

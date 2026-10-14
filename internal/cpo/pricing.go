@@ -98,9 +98,9 @@ func tariffNotApplicable(tariff map[string]any, at time.Time) string {
 	return ""
 }
 
-// applyPriceLimits enforces Tariff.min_price and max_price (OCPI 2.2.1 §11.3.1): each bound holds for the
-// excl. VAT and the incl. VAT total separately, and a bound without incl_vat limits the excl. VAT total only.
-// The per-dimension lines keep what the components priced; only the session total is bounded.
+// applyPriceLimits enforces Tariff.min_price and max_price (OCPI 2.2.1 §11.3.1) on the session total: each
+// bound holds for the excl. VAT and the incl. VAT total separately, and a bound without incl_vat limits the
+// excl. VAT total only. A total over max_price arrives here already frozen, unless priced per side.
 func applyPriceLimits(tariff map[string]any, price sessionPrice) (sessionPrice, bool) {
 	limited := false
 	bound := func(field string, below bool) {
@@ -289,10 +289,81 @@ type pricedPiece struct {
 // parkingAt. ENERGY and TIME are priced slice by slice, so an element that becomes active or stops
 // matching mid-session (clock, duration or energy restriction) bills only its own part.
 func priceSessionWithParking(tariff map[string]any, tariffID string, spans []chargeSpan, sessionStart, parkingAt time.Time, parkingHours float64) sessionPrice {
-	price := sessionPrice{TariffID: tariffID, Priced: true}
 	if tariff == nil {
 		return sessionPrice{TariffID: tariffID, Note: "no Tariff object to price against"}
 	}
+	price := priceLines(tariff, tariffID, spans, sessionStart, parkingAt, parkingHours)
+	if maxPriceCompare(tariff, price) > 0 {
+		price = priceAtMaxPrice(tariff, tariffID, spans, sessionStart, parkingAt, parkingHours)
+	}
+	return finishPrice(tariff, tariffID, price)
+}
+
+// priceSessionPerSide caps max_price on each side apart and leaves the lines as priced, as a partner
+// reading OCPI 2.2.1 to the letter may: a 60/60 max then bills 60/60, the lines adding up to more.
+func priceSessionPerSide(tariff map[string]any, tariffID string, spans []chargeSpan, sessionStart, parkingAt time.Time, parkingHours float64) sessionPrice {
+	if tariff == nil {
+		return sessionPrice{TariffID: tariffID, Note: "no Tariff object to price against"}
+	}
+	return finishPrice(tariff, tariffID, priceLines(tariff, tariffID, spans, sessionStart, parkingAt, parkingHours))
+}
+
+// How a partner caps a session at max_price; see Config.MaxPriceMode.
+const (
+	maxPriceFreezeAll = "FREEZE_ALL"
+	maxPriceTotalOnly = "TOTAL_ONLY"
+	maxPricePerSide   = "PER_SIDE"
+)
+
+func validMaxPriceMode(mode string) bool {
+	return mode == maxPriceFreezeAll || mode == maxPriceTotalOnly || mode == maxPricePerSide
+}
+
+// maxPriceModeOf reads an unset mode as the default.
+func maxPriceModeOf(mode string) string {
+	if validMaxPriceMode(mode) {
+		return mode
+	}
+	return maxPriceFreezeAll
+}
+
+// priceSessionAs prices with the console's max_price mode.
+func priceSessionAs(mode string, tariff map[string]any, tariffID string, spans []chargeSpan, sessionStart, parkingAt time.Time, parkingHours float64) sessionPrice {
+	switch maxPriceModeOf(mode) {
+	case maxPricePerSide:
+		return priceSessionPerSide(tariff, tariffID, spans, sessionStart, parkingAt, parkingHours)
+	case maxPriceTotalOnly:
+		return priceSessionTotalOnly(tariff, tariffID, spans, sessionStart, parkingAt, parkingHours)
+	}
+	return priceSessionWithParking(tariff, tariffID, spans, sessionStart, parkingAt, parkingHours)
+}
+
+// priceSessionTotalOnly freezes the total where the first side met max_price, keeping its excl/incl ratio,
+// but leaves the lines as priced: they add up to more than the total, the excess given away.
+func priceSessionTotalOnly(tariff map[string]any, tariffID string, spans []chargeSpan, sessionStart, parkingAt time.Time, parkingHours float64) sessionPrice {
+	if tariff == nil {
+		return sessionPrice{TariffID: tariffID, Note: "no Tariff object to price against"}
+	}
+	price := priceLines(tariff, tariffID, spans, sessionStart, parkingAt, parkingHours)
+	if maxPriceCompare(tariff, price) > 0 {
+		frozen := priceAtMaxPrice(tariff, tariffID, spans, sessionStart, parkingAt, parkingHours)
+		price.ExclVAT, price.InclVAT, price.Note = frozen.ExclVAT, frozen.InclVAT, frozen.Note
+	}
+	return finishPrice(tariff, tariffID, price)
+}
+
+func finishPrice(tariff map[string]any, tariffID string, price sessionPrice) sessionPrice {
+	price, limited := applyPriceLimits(tariff, price)
+	if len(price.Lines) == 0 && !limited {
+		price.Priced = false
+		price.Note = "Tariff " + tariffID + " has no active price component for this session"
+	}
+	return price
+}
+
+// priceLines prices every dimension of the timeline as the components bill it, before any min/max_price.
+func priceLines(tariff map[string]any, tariffID string, spans []chargeSpan, sessionStart, parkingAt time.Time, parkingHours float64) sessionPrice {
+	price := sessionPrice{TariffID: tariffID, Priced: true}
 	zone := sessionStart.Location()
 	kwh, chargingHours := 0.0, 0.0
 	for _, span := range spans {
@@ -377,11 +448,107 @@ func priceSessionWithParking(tariff map[string]any, tariffID string, spans []cha
 		}
 	}
 	price.ExclVAT, price.InclVAT = roundMoney(price.ExclVAT), roundMoney(price.InclVAT)
-	price, limited := applyPriceLimits(tariff, price)
-	if len(price.Lines) == 0 && !limited {
-		price.Priced = false
-		price.Note = "Tariff " + tariffID + " has no active price component for this session"
+	return price
+}
+
+// maxPriceCompare says whether a total is under (-1), on (0) or over (1) max_price, judged by the side
+// closest to its bound; 0 also when the Tariff sets no max_price.
+func maxPriceCompare(tariff map[string]any, price sessionPrice) int {
+	limit, ok := tariff["max_price"].(map[string]any)
+	if !ok {
+		return 0
 	}
+	result, bounded := -1, false
+	for key, total := range map[string]float64{"excl_vat": price.ExclVAT, "incl_vat": price.InclVAT} {
+		value, set := limit[key]
+		if !set || value == nil {
+			continue
+		}
+		bounded = true
+		switch amount := roundMoney(number(value)); {
+		case total > amount:
+			return 1
+		case total == amount:
+			result = 0
+		}
+	}
+	if !bounded {
+		return 0
+	}
+	return result
+}
+
+// priceAtMaxPrice freezes the session at the first millisecond its total met max_price on either side:
+// every line stops there, and the lines are scaled to add up to the capped total exactly.
+func priceAtMaxPrice(tariff map[string]any, tariffID string, spans []chargeSpan, sessionStart, parkingAt time.Time, parkingHours float64) sessionPrice {
+	end := parkingAt.Add(time.Duration(parkingHours * float64(time.Hour)))
+	for _, span := range spans {
+		if span.End.After(end) {
+			end = span.End
+		}
+	}
+	at := func(t time.Time) sessionPrice {
+		parked := math.Min(math.Max(t.Sub(parkingAt).Hours(), 0), parkingHours)
+		return priceLines(tariff, tariffID, spansUntil(spans, t), sessionStart, parkingAt, parked)
+	}
+	low, high := sessionStart, end
+	if maxPriceCompare(tariff, at(low)) >= 0 {
+		high = low
+	}
+	for high.Sub(low) > time.Millisecond {
+		middle := low.Add(high.Sub(low) / 2)
+		if maxPriceCompare(tariff, at(middle)) >= 0 {
+			high = middle
+		} else {
+			low = middle
+		}
+	}
+	return scaleToMaxPrice(tariff, at(high))
+}
+
+// spansUntil cuts the charging timeline at t, prorating the energy of the span t falls in.
+func spansUntil(spans []chargeSpan, t time.Time) []chargeSpan {
+	cut := make([]chargeSpan, 0, len(spans))
+	for _, span := range spans {
+		switch {
+		case !span.End.After(t):
+			cut = append(cut, span)
+		case !span.Start.Before(t):
+		default:
+			share := float64(t.Sub(span.Start)) / float64(span.End.Sub(span.Start))
+			cut = append(cut, chargeSpan{Start: span.Start, End: t, KWh: span.KWh * share})
+		}
+	}
+	return cut
+}
+
+// scaleToMaxPrice brings a total that met max_price down to it on the side that got there first, keeping
+// the excl/incl ratio; the lines follow and the rounding remainder lands on the largest line.
+func scaleToMaxPrice(tariff map[string]any, price sessionPrice) sessionPrice {
+	limit, _ := tariff["max_price"].(map[string]any)
+	ratio := 1.0
+	for key, total := range map[string]float64{"excl_vat": price.ExclVAT, "incl_vat": price.InclVAT} {
+		if value, set := limit[key]; set && value != nil && total > 0 {
+			ratio = math.Min(ratio, roundMoney(number(value))/total)
+		}
+	}
+	excl, incl := roundMoney(price.ExclVAT*ratio), roundMoney(price.InclVAT*ratio)
+	largest := -1
+	var lineExcl, lineIncl float64
+	for index := range price.Lines {
+		line := &price.Lines[index]
+		line.ExclVAT, line.InclVAT = roundMoney(line.ExclVAT*ratio), roundMoney(line.InclVAT*ratio)
+		lineExcl, lineIncl = lineExcl+line.ExclVAT, lineIncl+line.InclVAT
+		if largest < 0 || line.InclVAT > price.Lines[largest].InclVAT {
+			largest = index
+		}
+	}
+	if largest >= 0 {
+		price.Lines[largest].ExclVAT = roundMoney(price.Lines[largest].ExclVAT + excl - lineExcl)
+		price.Lines[largest].InclVAT = roundMoney(price.Lines[largest].InclVAT + incl - lineIncl)
+	}
+	price.ExclVAT, price.InclVAT = excl, incl
+	price.Note = "max_price applied"
 	return price
 }
 
