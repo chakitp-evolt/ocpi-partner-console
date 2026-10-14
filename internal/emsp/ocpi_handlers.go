@@ -3,6 +3,7 @@ package emsp
 import (
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -386,7 +387,7 @@ func (a *Controller) tokens(_ http.ResponseWriter, r *http.Request, run store.Ru
 	return methodNotAllowed()
 }
 
-func (a *Controller) commandCallback(_ http.ResponseWriter, r *http.Request, _ store.Run, _ Config, body map[string]any) handlerResponse {
+func (a *Controller) commandCallback(_ http.ResponseWriter, r *http.Request, run store.Run, _ Config, body map[string]any) handlerResponse {
 	if r.Method != http.MethodPost {
 		return methodNotAllowed()
 	}
@@ -398,7 +399,10 @@ func (a *Controller) commandCallback(_ http.ResponseWriter, r *http.Request, _ s
 	if ocpi.HasErrors(findings) {
 		return handlerResponse{Envelope: ocpi.Error(2001, "invalid CommandResult"), Findings: findings}
 	}
-	if err := a.store.UpdateCommandAsync(r.Context(), parts[0], fmt.Sprint(body["result"]), body); err != nil {
+	if err := a.store.UpdateCommandAsync(r.Context(), run.ID, parts[0], fmt.Sprint(body["result"]), body); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return notFound("command not found")
+		}
 		return storageError(err)
 	}
 	return handlerResponse{Envelope: ocpi.Success(nil), Findings: findings}

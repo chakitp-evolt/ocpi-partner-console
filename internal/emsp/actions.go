@@ -358,19 +358,19 @@ func (a *Controller) sendCommand(w http.ResponseWriter, r *http.Request) {
 	target := strings.TrimRight(endpoint, "/") + "/" + input.Type
 	result, err := a.doOCPI(r.Context(), run, config, "commands", http.MethodPost, target, tokenC, true, input.Payload)
 	if err != nil {
-		_ = a.store.UpdateCommandDirect(r.Context(), id, "TRANSPORT_ERROR", 0, map[string]any{"error": err.Error()})
+		_ = a.store.UpdateCommandDirect(r.Context(), run.ID, id, "TRANSPORT_ERROR", 0, map[string]any{"error": err.Error()})
 		writeAPIError(w, http.StatusBadGateway, "command failed", err)
 		return
 	}
 	var direct map[string]any
 	if err := jsonData(result.Envelope, &direct); err != nil {
-		_ = a.store.UpdateCommandDirect(r.Context(), id, "REJECTED", 0, envelopeMap(*result.Envelope))
+		_ = a.store.UpdateCommandDirect(r.Context(), run.ID, id, "REJECTED", 0, envelopeMap(*result.Envelope))
 		writeAPIError(w, http.StatusUnprocessableEntity, "command rejected", err)
 		return
 	}
 	timeout := intNumber(direct["timeout"])
 	status := fmt.Sprint(direct["result"])
-	if err := a.store.UpdateCommandDirect(r.Context(), id, status, timeout, direct); err != nil {
+	if err := a.store.UpdateCommandDirect(r.Context(), run.ID, id, status, timeout, direct); err != nil {
 		writeAPIError(w, http.StatusInternalServerError, "update command", err)
 		return
 	}

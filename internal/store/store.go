@@ -342,16 +342,32 @@ func (s *Store) CreateCommand(ctx context.Context, id, runID, commandType, respo
 	return err
 }
 
-func (s *Store) UpdateCommandDirect(ctx context.Context, id, status string, timeout int, response any) error {
+func (s *Store) UpdateCommandDirect(ctx context.Context, runID, id, status string, timeout int, response any) error {
 	raw, _ := json.Marshal(response)
-	_, err := s.db.ExecContext(ctx, `UPDATE partner_console_commands SET status=$2,direct_response=$3,timeout_seconds=$4,updated_at=now() WHERE id=$1`, id, status, raw, timeout)
-	return err
+	result, err := s.db.ExecContext(ctx, `UPDATE partner_console_commands SET status=$3,direct_response=$4,timeout_seconds=$5,updated_at=now() WHERE connection_id=$1 AND id=$2 AND leg='emsp'`, runID, id, status, raw, timeout)
+	if err != nil {
+		return err
+	}
+	if affected, err := result.RowsAffected(); err != nil {
+		return err
+	} else if affected == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
 }
 
-func (s *Store) UpdateCommandAsync(ctx context.Context, id, status string, result any) error {
-	raw, _ := json.Marshal(result)
-	_, err := s.db.ExecContext(ctx, `UPDATE partner_console_commands SET status=$2,async_result=$3,updated_at=now() WHERE id=$1`, id, status, raw)
-	return err
+func (s *Store) UpdateCommandAsync(ctx context.Context, runID, id, status string, response any) error {
+	raw, _ := json.Marshal(response)
+	result, err := s.db.ExecContext(ctx, `UPDATE partner_console_commands SET status=$3,async_result=$4,updated_at=now() WHERE connection_id=$1 AND id=$2 AND leg='emsp'`, runID, id, status, raw)
+	if err != nil {
+		return err
+	}
+	if affected, err := result.RowsAffected(); err != nil {
+		return err
+	} else if affected == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
 }
 
 func (s *Store) AddExchange(ctx context.Context, exchange Exchange) error {

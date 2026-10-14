@@ -24,7 +24,8 @@ import (
 	"bitbucket.org/evoltth/evolt-ocpi-partner-console/internal/store"
 )
 
-func TestBlackBoxJourney(t *testing.T) {
+func integrationDatabase(t *testing.T) *sql.DB {
+	t.Helper()
 	databaseURL := os.Getenv("TEST_DATABASE_URL")
 	if databaseURL == "" {
 		t.Fatal("TEST_DATABASE_URL is required for integration tests")
@@ -36,7 +37,7 @@ func TestBlackBoxJourney(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer db.Close()
+	t.Cleanup(func() { _ = db.Close() })
 	if _, err := db.ExecContext(context.Background(), `DROP SCHEMA public CASCADE; CREATE SCHEMA public`); err != nil {
 		t.Fatalf("reset isolated integration database: %v", err)
 	}
@@ -47,6 +48,11 @@ func TestBlackBoxJourney(t *testing.T) {
 	if _, err := db.ExecContext(context.Background(), string(schema)); err != nil {
 		t.Fatalf("apply schema: %v", err)
 	}
+	return db
+}
+
+func TestBlackBoxJourney(t *testing.T) {
+	db := integrationDatabase(t)
 	repository := store.New(db, "integration-test-encryption-key")
 
 	application, err := New(repository, slog.New(slog.NewTextHandler(io.Discard, nil)), Options{DefaultPublicURL: "http://pending"})
