@@ -12,8 +12,7 @@ import (
 	"bitbucket.org/evoltth/evolt-ocpi-partner-console/internal/ocpicore/rules"
 )
 
-// defaultCdrToken is the walk-up RFID the mock falls back to when a draft is started without a
-// START_SESSION command.
+// defaultCdrToken is the demo RFID used when no token or START_SESSION command is selected.
 func defaultCdrToken() map[string]any {
 	return map[string]any{"country_code": "TH", "party_id": "EVT", "uid": "DEMO-RFID-001", "type": "RFID", "contract_id": "TH-EVT-C00000001"}
 }
@@ -23,6 +22,7 @@ func (c *Controller) apiSessionAction(w http.ResponseWriter, r *http.Request) {
 	var input struct {
 		SessionID   string   `json:"session_id"`
 		CommandID   string   `json:"command_id"`
+		TokenID     string   `json:"token_id"`
 		LocationID  string   `json:"location_id"`
 		EVSEUID     string   `json:"evse_uid"`
 		ConnectorID string   `json:"connector_id"`
@@ -73,6 +73,14 @@ func (c *Controller) apiSessionAction(w http.ResponseWriter, r *http.Request) {
 			if value := fieldText(command.Request, "connector_id"); value != "" {
 				input.ConnectorID = value
 			}
+		} else if input.TokenID != "" {
+			token := c.state.Objects["tokens"][input.TokenID]
+			if token == nil {
+				c.mu.Unlock()
+				writeError(w, http.StatusNotFound, fmt.Errorf("selected Token is no longer in the partner catalogue; sync tokens and select again"))
+				return
+			}
+			cdrToken = cdrTokenFromToken(token.Body)
 		}
 		location := c.state.Objects["locations"][input.LocationID]
 		if location == nil {
@@ -476,7 +484,7 @@ func (c *Controller) apiEVSEStatus(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "envelope": result.Envelope})
 }
 
-// cdrTokenFromToken projects the Token a START_SESSION carries onto the CdrToken a Session holds:
+// cdrTokenFromToken projects a selected or command Token onto the CdrToken a Session holds:
 // the Token object has fields (issuer, valid, whitelist) a CdrToken must not repeat.
 func cdrTokenFromToken(token map[string]any) map[string]any {
 	result := map[string]any{}

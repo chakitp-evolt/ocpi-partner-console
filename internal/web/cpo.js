@@ -5,6 +5,7 @@ let partnerDBQuery='',partnerDBSort='latest';
 let partnerDBSecretsVisible=false;
 let objectDelivery='all',objectSort='latest';
 let editorTab='edit';
+let sessionDraftTokenID='',sessionDraftTokenRunID='';
 const editorDrafts=new Map(),newDrafts=new Map();
 const meterManualTargets=new Map();
 const meterControl={autoMode:false,rate:'7.2',run:null,timer:null,busy:false};
@@ -155,6 +156,17 @@ function automationControlsHTML(config){
   const idle=!!config.test_idle_fee,scheduled=idle&&Number(config.idle_unplug_after_seconds)>0;
   return `<div class="helper-card"><div class="helper-heading"><h3>Auto Command Flow</h3><span>${config.auto_command_flow?'ON':'OFF'}</span></div><label class="meter-mode"><input id="autoCommandFlow" type="checkbox" ${config.auto_command_flow?'checked':''} onchange="setAutoCommandFlow(this.checked)"> รับ START_SESSION แล้วสร้าง/ส่ง Session, ส่งหัว CHARGING และเพิ่ม meter อัตโนมัติ</label><label class="meter-mode"><input id="autoTestIdleFee" type="checkbox" ${idle?'checked':''} onchange="saveIdleSettings()"> ทดสอบ idle fee หลัง STOP_SESSION</label><p class="meter-hint">${idle?'เมื่อ Auto รับ STOP: หยุด meter แต่ Session ยัง ACTIVE และหัวยัง CHARGING จนตรวจพบถอดปลั๊ก · ถ้า Tariff ของ Session ไม่มี PARKING_TIME จะจบ Session และส่ง CDR ทันที':'เมื่อ Auto รับ STOP: จบ Session, ส่งหัว AVAILABLE และส่ง CDR อัตโนมัติเหมือนเดิม'}</p><div class="idle-options"><label class="meter-mode"><input id="autoUnplugEnabled" type="checkbox" ${scheduled?'checked':''} ${!idle?'disabled':''} onchange="saveIdleSettings()"> ตั้งเวลาถอดปลั๊กอัตโนมัติ</label><div class="meter-controls"><label>รอหลังหยุดชาร์จ (วินาที)<input id="autoUnplugSeconds" type="number" min="1" max="86400" step="1" value="${attr(config.idle_unplug_after_seconds||60)}" ${!scheduled?'disabled':''}></label><button type="button" class="ghost" onclick="saveIdleSettings()" ${!scheduled?'disabled':''}>ตั้งเวลา</button></div><p class="meter-hint">ไม่ตั้งเวลา = กดถอดปลั๊กเอง · ตั้งเวลาแล้ว server จะถอดปลั๊กจำลองและส่ง Session/CDR แม้ปิดหน้านี้ · ค่าใหม่ใช้กับ STOP ครั้งถัดไป</p><label class="meter-mode"><input id="autoParkingAtUnplug" type="checkbox" ${config.parking_at_unplug_only?'checked':''} ${!idle?'disabled':''} onchange="saveIdleSettings()"> ไม่ส่งค่าจอดระหว่างรอ ส่งครั้งเดียวตอนถอดปลั๊ก</label><p class="meter-hint">ไม่ติ๊ก = ส่ง PARKING_TIME และยอดค่าจอดให้ Evolt ทุกรอบ meter · ติ๊ก = เงียบจนถอดปลั๊ก (partner บางเจ้าทำแบบนี้ ใช้เทสว่า Evolt รับได้)</p></div><div class="meter-controls"><label>อัตรา meter (kWh/ชั่วโมง)<input id="autoCommandRate" type="number" min="0.001" max="350" step="any" value="${attr(config.auto_meter_rate_kwh||7.2)}" ${config.auto_command_flow?'disabled':''}></label><label>ส่ง Session PATCH ทุก (วินาที)<input id="autoSendSeconds" type="number" min="5" max="1800" step="1" value="${attr(config.send_interval_seconds||15)}" onchange="saveIdleSettings()"></label><label>ส่ง Charging Period ทุก (วินาที)<input id="autoPeriodSeconds" type="number" min="5" max="1800" step="1" value="${attr(config.period_interval_seconds||15)}" onchange="saveIdleSettings()"></label></div><p class="meter-hint">รอบส่ง Session ใช้กับ Auto Command Flow, Auto meter และค่าจอด · รอบ Period ใช้กับ Auto Command Flow และค่าจอด; meter จากหน้าเว็บรายงาน Period ทุกรอบส่ง · ระหว่างรอบ Period ส่งแค่ kwh และ total_cost · Period สั้นกว่าหรือเท่ารอบส่ง = ส่ง period ทุกรอบ · Period ถูกตัดตรงจุดที่ราคาเปลี่ยนเสมอ</p><p class="hint">ตั้งค่าก่อน Evolt ส่ง START/STOP · ปิด Auto Command Flow เพื่อสร้าง Session และกรอก meter ด้วยมือ</p></div>`;
 }
+function sessionDraftTokenPickerHTML(){
+  if(sessionDraftTokenRunID!==state.run_id){sessionDraftTokenID='';sessionDraftTokenRunID=state.run_id}
+  const tokens=state.objects.tokens||[];
+  const missing=sessionDraftTokenID&&!tokens.some(record=>record.id===sessionDraftTokenID);
+  const options=tokens.map(record=>{
+    const token=record.body||{};
+    const label=`${token.country_code||'?'}-${token.party_id||'?'} · ${token.uid||record.id} · ${token.type||'?'} · ${token.contract_id||'ไม่มี contract'}${token.valid===false?' · valid=false':''}`;
+    return `<option value="${attr(record.id)}" ${record.id===sessionDraftTokenID?'selected':''}>${esc(label)}</option>`;
+  }).join('');
+  return `<label>Token สำหรับ Session<select id="helperToken" onchange="sessionDraftTokenID=this.value"><option value="" ${!sessionDraftTokenID?'selected':''}>Demo · DEMO-RFID-001</option>${missing?'<option value="'+attr(sessionDraftTokenID)+'" selected disabled>Token ที่เลือกไม่อยู่ในรายการแล้ว — เลือกใหม่</option>':''}${options}</select></label><p class="hint">เลือกจาก Tokens ที่รับหรือดึงจาก Evolt${tokens.length?'':' · ยังไม่มี Token — โหลดจากแท็บ Tokens ได้'}</p>`;
+}
 function renderHelpers(){
   const root=document.getElementById('helperPanel');
   root.innerHTML='';
@@ -177,7 +189,7 @@ function renderHelpers(){
       :`<div class="helper-alt"><span>ยังไม่มี START_SESSION จาก Evolt — ใช้การเลือกเองด้านบน</span></div>`;
     const createLabel=meterControl.autoMode?'Create, send & start':'Create draft';
     const precreateMeter=`<div class="meter-card"><div class="lifecycle-head"><strong>วงจร Session</strong><span>ก่อนสร้าง Session</span></div><label class="meter-mode"><input type="checkbox" ${meterControl.autoMode?'checked':''} onchange="setAutoMeterMode(this.checked)"> ให้ meter วิ่งอัตโนมัติหลังสร้าง Session</label><div class="meter-controls"><label>อัตราการไหล (kWh/ชั่วโมง)<input id="meterDraftRate" type="number" min="0.001" step="any" value="${attr(meterControl.rate)}" oninput="meterControl.rate=this.value" ${!meterControl.autoMode?'disabled':''}></label></div><p class="meter-hint">เมื่อเปิดโหมด Create จะส่ง initial PUT ไป Evolt แล้วเริ่ม meter; ทุก 15 วินาทีจึงส่ง Session PATCH ขณะเปิดหน้านี้ไว้ ถ้าปิดไว้จะเป็น draft ให้ส่งและกรอกค่าเองเหมือนเดิม</p></div>`;
-    document.getElementById('draftPane').innerHTML=`<div class="helper-card"><div class="helper-heading"><h3>Create session draft</h3><span>STEP 1</span></div><div class="helper-grid"><select id="helperLocation" aria-label="Location" onchange="fillConnectorOptions()">${locations.map(x=>`<option>${esc(x.id)}</option>`).join('')}</select><select id="helperEVSE" aria-label="EVSE"></select><select id="helperConnector" aria-label="Connector"></select></div>${precreateMeter}<div class="action-row"><button id="createSessionButton" onclick="createSession()">${createLabel}</button></div>${fromCommand}</div>`;
+    document.getElementById('draftPane').innerHTML=`<div class="helper-card"><div class="helper-heading"><h3>Create session draft</h3><span>STEP 1</span></div><div class="helper-grid"><select id="helperLocation" aria-label="Location" onchange="fillConnectorOptions()">${locations.map(x=>`<option>${esc(x.id)}</option>`).join('')}</select><select id="helperEVSE" aria-label="EVSE"></select><select id="helperConnector" aria-label="Connector"></select></div>${sessionDraftTokenPickerHTML()}${precreateMeter}<div class="action-row"><button id="createSessionButton" onclick="createSession()">${createLabel}</button></div>${fromCommand}</div>`;
     document.getElementById('lifecyclePane').innerHTML=sessionLifecycleHTML(currentRecord());
     fillConnectorOptions();
     fillCommandConnectorOptions();
@@ -273,7 +285,10 @@ async function createCDRCorrection(action,id){try{const result=await api(`/api/c
 
 async function patchEVSEStatus(){try{await api('/api/cpo/actions/evse-status',{method:'POST',body:JSON.stringify({location_id:value('statusLocation'),evse_uid:value('statusEVSE'),status:value('statusValue')})});toast('EVSE status PATCH accepted');await refresh()}catch(error){toast(error.message,true)}}
 async function createSession(){
-  await createSessionDraft({location_id:value('helperLocation'),evse_uid:value('helperEVSE'),connector_id:value('helperConnector')});
+  const input={location_id:value('helperLocation'),evse_uid:value('helperEVSE'),connector_id:value('helperConnector')};
+  const tokenID=value('helperToken');
+  if(tokenID)input.token_id=tokenID;
+  await createSessionDraft(input);
 }
 async function createSessionFromCommand(){const commandID=value('helperCommand');if(!commandID)return toast('Select a START_SESSION command first',true);await createSessionDraft({command_id:commandID,connector_id:value('helperCommandConnector')})}
 async function createSessionDraft(input){

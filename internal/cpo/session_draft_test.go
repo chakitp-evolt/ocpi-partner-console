@@ -38,7 +38,7 @@ func TestDraftFromStartSessionResolvesTheConnectorEvoltDidNotSend(t *testing.T) 
 	}
 	controller.mu.Unlock()
 
-	recorder, result := callSessionAction(t, controller, "create", map[string]any{"command_id": "cmd-1"})
+	recorder, result := callSessionAction(t, controller, "create", map[string]any{"command_id": "cmd-1", "token_id": "missing-manual-token"})
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("status = %d body = %s — a START_SESSION without connector_id must still draft", recorder.Code, recorder.Body)
 	}
@@ -55,6 +55,77 @@ func TestDraftFromStartSessionResolvesTheConnectorEvoltDidNotSend(t *testing.T) 
 	}
 	if _, repeated := token["whitelist"]; repeated {
 		t.Error("CdrToken must not repeat Token-only fields")
+	}
+}
+
+func TestManualSessionUsesSelectedTokenThroughCDRDraft(t *testing.T) {
+	controller := New("https://partner.example")
+	for _, token := range []map[string]any{
+		{"country_code": "TH", "party_id": "EVT", "uid": "DRIVER-1", "type": "RFID", "contract_id": "TH-EVT-C1", "valid": true},
+		{"country_code": "DE", "party_id": "OTH", "uid": "DRIVER-1", "type": "RFID", "contract_id": "DE-OTH-C1", "valid": true, "issuer": "Other MSP", "whitelist": "ALLOWED"},
+		{"country_code": "DE", "party_id": "OTH", "uid": "DRIVER-1", "type": "APP_USER", "contract_id": "DE-OTH-C2", "valid": true},
+	} {
+		key := tokenObjectID(fieldText(token, "country_code"), fieldText(token, "party_id"), fieldText(token, "uid"), fieldText(token, "type"))
+		controller.state.Objects["tokens"][key] = &Record{Body: token}
+	}
+	tokenID := tokenObjectID("DE", "OTH", "DRIVER-1", "RFID")
+	recorder, result := callSessionAction(t, controller, "create", map[string]any{
+		"token_id": tokenID, "location_id": "BKK-SILOM", "evse_uid": "SIL-EVSE-1", "connector_id": "1",
+	})
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("create: HTTP %d %s", recorder.Code, recorder.Body)
+	}
+	session := result["object"].(map[string]any)
+	token := session["cdr_token"].(map[string]any)
+	if token["country_code"] != "DE" || token["party_id"] != "OTH" || token["uid"] != "DRIVER-1" || token["type"] != "RFID" || token["contract_id"] != "DE-OTH-C1" || len(token) != 5 {
+		t.Fatalf("wrong CdrToken: %#v", token)
+	}
+	if session["auth_method"] != "WHITELIST" {
+		t.Fatalf("manual auth_method = %v", session["auth_method"])
+	}
+	controller.state.Objects["tokens"][tokenID].Body["contract_id"] = "CHANGED-AFTER-START"
+	sessionID := fieldText(session, "id")
+	record := controller.state.Objects["sessions"][sessionID]
+	start, err := parseOCPITime(fieldText(record.Body, "start_date_time"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	controller.meterUpdate(record, 1.25, true, start.Add(time.Minute).Format(time.RFC3339Nano), true)
+	recorder, result = callSessionAction(t, controller, "cdr", map[string]any{"session_id": sessionID})
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("create CDR: HTTP %d %s", recorder.Code, recorder.Body)
+	}
+	cdr := result["object"].(map[string]any)
+	if got := cdr["cdr_token"].(map[string]any); got["contract_id"] != "DE-OTH-C1" || got["type"] != "RFID" || got["party_id"] != "OTH" || len(got) != 5 {
+		t.Fatalf("CDR did not preserve Session token: %#v", got)
+	}
+}
+
+func TestManualSessionRejectsMissingOrOtherConnectionToken(t *testing.T) {
+	base, dual := New("https://partner.example"), New("https://partner.example/dual")
+	tokenID := tokenObjectID("TH", "EVT", "DRIVER-1", "RFID")
+	base.state.Objects["tokens"][tokenID] = &Record{Body: map[string]any{"uid": "DRIVER-1"}}
+	for name, controller := range map[string]*Controller{"missing": New(""), "other connection": dual} {
+		t.Run(name, func(t *testing.T) {
+			recorder, _ := callSessionAction(t, controller, "create", map[string]any{
+				"token_id": tokenID, "location_id": "BKK-SILOM", "evse_uid": "SIL-EVSE-1", "connector_id": "1",
+			})
+			if recorder.Code != http.StatusNotFound || len(controller.state.Objects["sessions"]) != 0 {
+				t.Fatalf("unknown selection created a Session: HTTP %d %s", recorder.Code, recorder.Body)
+			}
+		})
+	}
+}
+
+func TestManualSessionWithoutTokenSelectionKeepsDemoToken(t *testing.T) {
+	recorder, result := callSessionAction(t, New(""), "create", map[string]any{
+		"location_id": "BKK-SILOM", "evse_uid": "SIL-EVSE-1", "connector_id": "1",
+	})
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("create demo: HTTP %d %s", recorder.Code, recorder.Body)
+	}
+	if token := result["object"].(map[string]any)["cdr_token"].(map[string]any); token["uid"] != "DEMO-RFID-001" {
+		t.Fatalf("default token = %#v", token)
 	}
 }
 

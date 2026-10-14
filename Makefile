@@ -1,4 +1,4 @@
-.PHONY: build run test test-integration lint docker-build db-up db-down up down
+.PHONY: build run test test-web test-integration lint docker-build db-up db-down up down
 
 APP := evolt-ocpi-partner-console
 
@@ -10,6 +10,9 @@ run:
 
 test:
 	go test ./...
+
+test-web:
+	node --test tests/*.test.cjs
 
 # Needs an empty database named partner_console_test; the test drops and recreates its schema.
 test-integration:
