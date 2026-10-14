@@ -49,7 +49,7 @@ async function resetRun(){
   catch(error){toast(error.message,true);syncResetButton()}
 }
 
-async function runAction(action) { try { const data=await request(`/api/actions/${action}`,{method:'POST',body:'{}'}); toast(`${action} complete`); showResult(data); await refresh(); } catch(error){ toast(error.message,true); await refresh(); } }
+async function runAction(action) { try { const data=await request(`/api/emsp/actions/${action}`,{method:'POST',body:'{}'}); toast(`${action} complete`); showResult(data); await refresh(); } catch(error){ toast(error.message,true); await refresh(); } }
 async function pull(module) { try { const data=await request('/api/emsp/actions/pull',{method:'POST',body:JSON.stringify({module})}); toast(`${module}: ${data.stored}/${data.received} stored`); await refresh(); } catch(error){ toast(error.message,true); await refresh(); } }
 
 function isDualInbound(){return location.pathname==='/dual/emsp'}

@@ -130,7 +130,7 @@ function dualAction(action){
   const labels={discover:'ตรวจ connection',register:'ลงทะเบียน partner','check-credentials':'ตรวจ credentials','rotate-credentials':'หมุน credentials'};
   return dualRun(labels[action],async()=>{
     if(dualFormDirty&&['discover','register'].includes(action))await dualPersist();
-    await dualAPI(`/api/actions/${action}`,{method:'POST',body:'{}'});
+    await dualAPI(`/api/emsp/actions/${action}`,{method:'POST',body:'{}'});
     await refreshDual();
   });
 }
