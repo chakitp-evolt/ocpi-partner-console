@@ -84,12 +84,32 @@ func main() {
 	signal.Notify(stop, syscall.SIGINT, syscall.SIGTERM)
 	<-stop
 
+	shutdown(httpServer, console, logger)
+}
+
+type httpShutdown interface {
+	Shutdown(context.Context) error
+	Close() error
+}
+
+type consoleFlusher interface {
+	Close(context.Context) error
+}
+
+func shutdown(httpServer httpShutdown, console consoleFlusher, logger *slog.Logger) {
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer shutdownCancel()
 	if err := httpServer.Shutdown(shutdownCtx); err != nil {
 		logger.Error("graceful shutdown", "error", err)
+		if err := httpServer.Close(); err != nil {
+			logger.Error("close http connections", "error", err)
+		}
 	}
-	if err := console.Close(shutdownCtx); err != nil {
+	shutdownCancel()
+
+	// SSE can exhaust the HTTP shutdown deadline; the final database save needs its own time budget.
+	flushCtx, flushCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer flushCancel()
+	if err := console.Close(flushCtx); err != nil {
 		logger.Error("flush partner state", "error", err)
 	}
 }
