@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"bitbucket.org/evoltth/evolt-ocpi-partner-console/internal/ocpi"
 	"bitbucket.org/evoltth/evolt-ocpi-partner-console/internal/ocpicore/rules"
 )
 
@@ -161,6 +162,21 @@ func (c *Controller) apiSessionAction(w http.ResponseWriter, r *http.Request) {
 					return
 				}
 				increment = *input.TargetKWh - current
+			}
+			if action == "advance" {
+				at, err := parseOCPITime(timestamp)
+				if err != nil {
+					at = time.Now().UTC()
+				}
+				if stopAt, kwh, reached := c.maxPriceStopLocked(record, number(record.Body["kwh"])+increment, at); reached {
+					c.mu.Unlock()
+					if err := c.completeSessionAt(r.Context(), input.SessionID, "", kwh, ocpi.FormatTime(stopAt)); err != nil {
+						writeError(w, http.StatusBadGateway, fmt.Errorf("stop at max_price: %w", err))
+						return
+					}
+					writeJSON(w, http.StatusOK, map[string]any{"ok": true, "session_id": input.SessionID, "stopped_at_max_price": true, "kwh": kwh})
+					return
+				}
 			}
 			// A reading entered by hand is reported as its own Charging Period.
 			patch := c.meterUpdate(record, increment, action == "complete", timestamp, true)

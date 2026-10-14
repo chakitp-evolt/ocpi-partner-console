@@ -4,13 +4,18 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"time"
 
 	"bitbucket.org/evoltth/evolt-ocpi-partner-console/internal/ocpi"
 )
+
+// errMaxPriceStop ends the meter loop of a Session that completed at max_price; it is not an error to record.
+var errMaxPriceStop = errors.New("session completed at max_price")
 
 type autoMeterRun struct {
 	cancel context.CancelFunc
@@ -27,6 +32,8 @@ func (c *Controller) apiAutomation(w http.ResponseWriter, r *http.Request) {
 		Rate                   float64 `json:"rate_kwh_per_hour"`
 		// Omitted fields keep their current value, so a client that does not know them changes nothing.
 		ParkingAtUnplugOnly   *bool `json:"parking_at_unplug_only"`
+		StopAtMaxPrice        *bool `json:"stop_at_max_price"`
+		StopAtMaxPriceExact   *bool `json:"stop_at_max_price_exact"`
 		PeriodIntervalSeconds *int  `json:"period_interval_seconds"`
 		SendIntervalSeconds   *int  `json:"send_interval_seconds"`
 	}
@@ -62,6 +69,12 @@ func (c *Controller) apiAutomation(w http.ResponseWriter, r *http.Request) {
 	if input.ParkingAtUnplugOnly != nil {
 		c.state.Config.ParkingAtUnplugOnly = *input.ParkingAtUnplugOnly
 	}
+	if input.StopAtMaxPrice != nil {
+		c.state.Config.StopAtMaxPrice = *input.StopAtMaxPrice
+	}
+	if input.StopAtMaxPriceExact != nil {
+		c.state.Config.StopAtMaxPriceExact = *input.StopAtMaxPriceExact
+	}
 	if input.PeriodIntervalSeconds != nil {
 		c.state.Config.PeriodIntervalSeconds = *input.PeriodIntervalSeconds
 	}
@@ -77,7 +90,7 @@ func (c *Controller) apiAutomation(w http.ResponseWriter, r *http.Request) {
 		c.stopAllAutoRuns()
 	}
 	c.resumeAutoRuns()
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "enabled": input.Enabled, "test_idle_fee": input.TestIdleFee, "idle_unplug_after_seconds": input.IdleUnplugAfterSeconds, "rate_kwh_per_hour": input.Rate, "parking_at_unplug_only": config.ParkingAtUnplugOnly, "period_interval_seconds": config.periodInterval().Seconds(), "send_interval_seconds": config.sendInterval().Seconds()})
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "enabled": input.Enabled, "test_idle_fee": input.TestIdleFee, "idle_unplug_after_seconds": input.IdleUnplugAfterSeconds, "rate_kwh_per_hour": input.Rate, "parking_at_unplug_only": config.ParkingAtUnplugOnly, "stop_at_max_price": config.StopAtMaxPrice, "stop_at_max_price_exact": config.StopAtMaxPriceExact, "period_interval_seconds": config.periodInterval().Seconds(), "send_interval_seconds": config.sendInterval().Seconds()})
 }
 
 func (c *Controller) autoCommand(commandID string) {
@@ -167,6 +180,11 @@ func (c *Controller) autoStopCommand(ctx context.Context, command *CommandRecord
 }
 
 func (c *Controller) completeStoppedSession(ctx context.Context, sessionID, commandID string, target float64) error {
+	return c.completeSessionAt(ctx, sessionID, commandID, target, now())
+}
+
+// completeSessionAt ends a charging Session at timestamp with the meter at target, then sends the Session and its CDR.
+func (c *Controller) completeSessionAt(ctx context.Context, sessionID, commandID string, target float64, timestamp string) error {
 	c.mu.Lock()
 	record := c.state.Objects["sessions"][sessionID]
 	if record == nil || fieldText(record.Body, "status") != "ACTIVE" || record.Delivery != "SENT" || c.idleCommandLocked(sessionID) != nil {
@@ -178,7 +196,7 @@ func (c *Controller) completeStoppedSession(ctx context.Context, sessionID, comm
 		c.mu.Unlock()
 		return fmt.Errorf("final meter is below the current meter reading")
 	}
-	patch := c.meterUpdate(record, target-current, true, now(), true)
+	patch := c.meterUpdate(record, target-current, true, timestamp, true)
 	cost, _ := record.Body["total_cost"].(map[string]any)
 	price := sessionPrice{Priced: cost != nil, ExclVAT: number(cost["excl_vat"]), InclVAT: number(cost["incl_vat"])}
 	c.mu.Unlock()
@@ -450,7 +468,9 @@ func (c *Controller) advanceAutoMeter(sessionID string, at time.Time) bool {
 		return false
 	}
 	if err := c.autoMeterTick(sessionID, target, at); err != nil {
-		c.recordAutoErrorForSession(sessionID, err)
+		if !errors.Is(err, errMaxPriceStop) {
+			c.recordAutoErrorForSession(sessionID, err)
+		}
 		return false
 	}
 	return true
@@ -470,6 +490,13 @@ func (c *Controller) autoMeterTick(sessionID string, target float64, at time.Tim
 	if increment < 0 {
 		increment = 0
 	}
+	if stopAt, kwh, reached := c.maxPriceStopLocked(record, number(record.Body["kwh"])+increment, at); reached {
+		c.mu.Unlock()
+		if err := c.completeSessionAt(context.Background(), sessionID, "", kwh, ocpi.FormatTime(stopAt)); err != nil {
+			return fmt.Errorf("stop at max_price: %w", err)
+		}
+		return errMaxPriceStop
+	}
 	flush := c.state.Config.periodDue(at, periodsEnd(record.Body))
 	patch := c.meterUpdate(record, increment, false, ocpi.FormatTime(at), flush)
 	c.mu.Unlock()
@@ -480,6 +507,70 @@ func (c *Controller) autoMeterTick(sessionID string, target float64, at time.Tim
 		return fmt.Errorf("meter Session PATCH failed: %s", recorder.Body.String())
 	}
 	return nil
+}
+
+// maxPriceStopLocked says where a charger set to stop at max_price ends a meter update to target at `at`:
+// on this reading once the total is there, or with StopAtMaxPriceExact at the moment the total met it.
+// Only a sent Session can be completed this way. Caller holds c.mu.
+func (c *Controller) maxPriceStopLocked(record *Record, target float64, at time.Time) (time.Time, float64, bool) {
+	if !c.state.Config.StopAtMaxPrice || record.Delivery != "SENT" {
+		return time.Time{}, 0, false
+	}
+	return c.maxPriceStop(record, target, at, c.state.Config.StopAtMaxPriceExact)
+}
+
+// maxPriceStop reports whether the Session total meets the Tariff's max_price with the meter at target at
+// `at`. With exact it finds the first point since the last report where it did, as a charger watching its
+// price all the time would: time and meter are taken as rising together, so a reading entered at once is
+// cut at the kWh where the total met max_price. Caller holds c.mu.
+func (c *Controller) maxPriceStop(record *Record, target float64, at time.Time, exact bool) (time.Time, float64, bool) {
+	tariffID, tariff, zone, _ := c.tariffForSession(record.Body)
+	if _, capped := tariff["max_price"].(map[string]any); !capped {
+		return time.Time{}, 0, false
+	}
+	startAt, err := parseOCPITime(fieldText(record.Body, "start_date_time"))
+	if err != nil {
+		return time.Time{}, 0, false
+	}
+	checkpoint, err := parseOCPITime(fieldText(record.Body, "last_updated"))
+	if err != nil || checkpoint.After(at) {
+		return time.Time{}, 0, false
+	}
+	current := number(record.Body["kwh"])
+	// point rounds up to the millisecond and the 0.000001 kWh the Session carries, so it never lands short.
+	point := func(share float64) (time.Time, float64) {
+		t := checkpoint.Add(time.Duration(math.Ceil(float64(at.Sub(checkpoint))*share/float64(time.Millisecond))) * time.Millisecond)
+		if t.After(at) {
+			t = at
+		}
+		return t, math.Min(math.Ceil((current+(target-current)*share)*1e6)/1e6, target)
+	}
+	reached := func(share float64) bool {
+		t, kwh := point(share)
+		body := cloneMap(record.Body)
+		body["kwh"] = kwh
+		price := priceSessionWithParking(tariff, tariffID, sessionSpans(body, t), startAt.In(zone), t, 0)
+		return reachedMaxPrice(tariff, price.totalCost())
+	}
+	if !reached(1) {
+		return time.Time{}, 0, false
+	}
+	if !exact {
+		return at, target, true
+	}
+	low, high := 0.0, 1.0
+	if reached(low) {
+		high = low
+	}
+	for i := 0; i < 48 && high > low; i++ {
+		if middle := (low + high) / 2; reached(middle) {
+			high = middle
+		} else {
+			low = middle
+		}
+	}
+	stopAt, kwh := point(high)
+	return stopAt, kwh, true
 }
 
 func (c *Controller) recordAutoErrorForSession(sessionID string, err error) {

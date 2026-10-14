@@ -37,6 +37,12 @@ type Config struct {
 	// ParkingAtUnplugOnly holds a parked Session's PARKING_TIME and cost until the car leaves instead of
 	// reporting them while it stays plugged in; OCPI 2.2.1 §9.3.1 leaves that choice to the CPO.
 	ParkingAtUnplugOnly bool `json:"parking_at_unplug_only"`
+	// StopAtMaxPrice ends a charge once a meter update brings its total to the Tariff's max_price, from
+	// Auto Command Flow or the page's meter alike: the Session completes and the CDR goes out with no idle time. By default the stop lands on the meter
+	// report that saw the total there, as a backend pricing periodic meter values does; StopAtMaxPriceExact
+	// stops at the moment the total met it instead, as a charger pricing the charge itself does.
+	StopAtMaxPrice      bool `json:"stop_at_max_price"`
+	StopAtMaxPriceExact bool `json:"stop_at_max_price_exact"`
 	// PeriodIntervalSeconds sets the Charging Period cadence; 0 defaults to 15 seconds.
 	// Intermediate ticks only update kwh and total_cost.
 	PeriodIntervalSeconds int `json:"period_interval_seconds"`
@@ -228,6 +234,8 @@ func (c *Controller) SyncConnection(config Config, status, tokenA, initial, toke
 	config.IdleUnplugAfterSeconds = c.state.Config.IdleUnplugAfterSeconds
 	config.AutoMeterRateKWh = c.state.Config.AutoMeterRateKWh
 	config.ParkingAtUnplugOnly = c.state.Config.ParkingAtUnplugOnly
+	config.StopAtMaxPrice = c.state.Config.StopAtMaxPrice
+	config.StopAtMaxPriceExact = c.state.Config.StopAtMaxPriceExact
 	config.PeriodIntervalSeconds = c.state.Config.PeriodIntervalSeconds
 	config.SendIntervalSeconds = c.state.Config.SendIntervalSeconds
 	if reflect.DeepEqual(c.state.Config, config) && c.state.Status == status && c.state.TokenA == tokenA && c.state.InitialToken == initial && c.state.TokenB == tokenB && c.state.TokenC == tokenC && reflect.DeepEqual(c.state.Endpoints, endpoints) {

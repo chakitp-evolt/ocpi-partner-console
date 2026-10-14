@@ -127,6 +127,20 @@ func applyPriceLimits(tariff map[string]any, price sessionPrice) (sessionPrice, 
 	return price, limited
 }
 
+// reachedMaxPrice reports whether a Session total sits on the Tariff's max_price on either side it bounds.
+func reachedMaxPrice(tariff map[string]any, cost map[string]any) bool {
+	limit, ok := tariff["max_price"].(map[string]any)
+	if !ok || cost == nil {
+		return false
+	}
+	for _, key := range []string{"excl_vat", "incl_vat"} {
+		if value, set := limit[key]; set && value != nil && roundMoney(number(cost[key])) >= roundMoney(number(value)) {
+			return true
+		}
+	}
+	return false
+}
+
 // chargeSpan is one stretch of charging and the energy delivered across it, taken as evenly spread.
 type chargeSpan struct {
 	Start, End time.Time

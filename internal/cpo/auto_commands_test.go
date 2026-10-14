@@ -274,3 +274,191 @@ func TestAutoStartDoesNotGuessAmbiguousConnector(t *testing.T) {
 		t.Fatalf("connector_id without evse_uid should be invalid: %v", findings)
 	}
 }
+
+func TestAutoMeterStopsAtMaxPrice(t *testing.T) {
+	for _, tc := range []struct {
+		name                  string
+		stopAtMaxPrice, exact bool
+	}{
+		{"report stop completes on the tick that saw max_price", true, false},
+		{"exact stop completes where the total met max_price", true, true},
+		{"without the switch the charge continues at max_price", false, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var peerURL string
+			peer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				location := ""
+				if r.Method == http.MethodPost && r.URL.Path == "/cdrs" {
+					location = peerURL + "/cdrs/stored"
+				}
+				writePeerResponse(w, r, http.StatusOK, nil, location)
+			}))
+			defer peer.Close()
+			peerURL = peer.URL
+			c := New(peer.URL)
+			c.mu.Lock()
+			c.state.TokenC = "test-token"
+			c.state.Config.AutoCommandFlow = true
+			c.state.Config.TestIdleFee = true
+			c.state.Config.StopAtMaxPrice = tc.stopAtMaxPrice
+			c.state.Config.StopAtMaxPriceExact = tc.exact
+			c.state.Config.AutoMeterRateKWh = 7.2
+			c.state.Endpoints = []Endpoint{
+				{Identifier: "sessions", Role: "RECEIVER", URL: peer.URL + "/sessions"},
+				{Identifier: "cdrs", Role: "RECEIVER", URL: peer.URL + "/cdrs"},
+				{Identifier: "locations", Role: "RECEIVER", URL: peer.URL + "/locations"},
+			}
+			start := &CommandRecord{ID: "start-1", Type: "START_SESSION", Request: map[string]any{
+				"response_url": peer.URL + "/callback/start", "location_id": "BKK-SILOM", "evse_uid": "SIL-EVSE-1",
+				"token": map[string]any{"country_code": "TH", "party_id": "EVT", "uid": "TEST-1", "type": "RFID", "contract_id": "TH-EVT-C1"},
+			}, ResponseURL: peer.URL + "/callback/start"}
+			c.state.Commands[start.ID] = start
+			c.mu.Unlock()
+
+			c.autoStartCommand(t.Context(), start)
+			c.mu.Lock()
+			sessionID := fieldText(start.Result, "session_id")
+			session := c.state.Objects["sessions"][sessionID]
+			if session == nil {
+				c.mu.Unlock()
+				t.Fatalf("auto START did not create a Session: %+v", start.Result)
+			}
+			// The 15 s tick reaches 0.03 kWh at 7.50/kWh (0.22/0.24), past max_price 0.20/0.20. The parking
+			// price proves the stop skips idle even when idle testing is on.
+			tariff, _ := session.Snapshot["tariff"].(map[string]any)
+			tariff["max_price"] = map[string]any{"excl_vat": 0.2, "incl_vat": 0.2}
+			elements, _ := tariff["elements"].([]any)
+			tariff["elements"] = append(elements, map[string]any{"price_components": []any{map[string]any{"type": "PARKING_TIME", "price": 30.0, "vat": 7.0, "step_size": 60}}})
+			checkpoint, _ := time.Parse(time.RFC3339Nano, fieldText(session.Body, "last_updated"))
+			c.mu.Unlock()
+
+			continued := c.advanceAutoMeter(sessionID, checkpoint.Add(15*time.Second))
+			c.mu.RLock()
+			defer c.mu.RUnlock()
+			body := c.state.Objects["sessions"][sessionID].Body
+			cdr := c.state.Objects["cdrs"]["CDR-"+sessionID]
+			cost, _ := body["total_cost"].(map[string]any)
+			// Stopping at the moment incl_vat meets 0.20 leaves excl_vat at 0.19; the tick caps both sides.
+			wantExcl := 0.2
+			if tc.exact {
+				wantExcl = 0.19
+			}
+			if number(cost["excl_vat"]) != wantExcl || number(cost["incl_vat"]) != 0.2 {
+				t.Errorf("total_cost = %v, want %.2f/0.20", cost, wantExcl)
+			}
+			if !tc.stopAtMaxPrice {
+				if !continued || fieldText(body, "status") != "ACTIVE" || cdr != nil {
+					t.Errorf("charge must continue: continued=%v status=%s cdr=%v", continued, fieldText(body, "status"), cdr != nil)
+				}
+				return
+			}
+			if continued {
+				t.Error("meter loop must end once the Session completed at max_price")
+			}
+			if fieldText(body, "status") != "COMPLETED" {
+				t.Errorf("Session status = %s, want COMPLETED", fieldText(body, "status"))
+			}
+			// Exact: incl_vat meets 0.20 once the 1 Wh step reaches 25 Wh (0.025 x 8.025 = 0.2006), past
+			// 0.024 kWh at 12 s. Report: the stop lands on the 15 s tick at 0.03 kWh, lines above the total.
+			wantMinKWh, wantMaxKWh, wantEnd := 0.03, 0.03, 15*time.Second
+			wantEnergy := map[string]float64{"excl_vat": 0.22, "incl_vat": 0.24}
+			if tc.exact {
+				wantMinKWh, wantMaxKWh, wantEnd = 0.024001, 0.0241, 12*time.Second
+				wantEnergy = map[string]float64{"excl_vat": 0.19, "incl_vat": 0.2}
+			}
+			if kwh := number(body["kwh"]); kwh < wantMinKWh || kwh > wantMaxKWh {
+				t.Errorf("meter stopped at %g kWh, want %g..%g", kwh, wantMinKWh, wantMaxKWh)
+			}
+			end, _ := parseOCPITime(fieldText(body, "end_date_time"))
+			if got := end.Sub(checkpoint); got < wantEnd || got > wantEnd+5*time.Millisecond {
+				t.Errorf("Session ended %s after the last report, want %s", got, wantEnd)
+			}
+			if cdr == nil || cdr.Delivery != "SENT" {
+				t.Fatalf("CDR not sent: %+v", cdr)
+			}
+			energy, _ := cdr.Body["total_energy_cost"].(map[string]any)
+			if number(energy["excl_vat"]) != wantEnergy["excl_vat"] || number(energy["incl_vat"]) != wantEnergy["incl_vat"] {
+				t.Errorf("total_energy_cost = %v, want %v", energy, wantEnergy)
+			}
+			periods, _ := cdr.Body["charging_periods"].([]any)
+			if sumDimension(periods, "PARKING_TIME") != 0 || cdr.Body["total_parking_cost"] != nil {
+				t.Error("stop at max_price must not add idle time")
+			}
+			if got := testEVSEStatus(c.state.Objects["locations"]["BKK-SILOM"].Body, "SIL-EVSE-1"); got != "AVAILABLE" {
+				t.Errorf("EVSE status = %s, want AVAILABLE", got)
+			}
+			if start.Result["automation_error"] != nil {
+				t.Errorf("stop at max_price recorded an automation error: %v", start.Result["automation_error"])
+			}
+		})
+	}
+}
+
+func TestMeterAdvanceStopsAtMaxPrice(t *testing.T) {
+	for _, tc := range []struct {
+		name                 string
+		exact                bool
+		wantMinKWh, wantKWhs float64
+	}{
+		{"report stop keeps the entered reading", false, 0.03, 0.03},
+		{"exact stop cuts the reading where the total met max_price", true, 0.024001, 0.0241},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var peerURL string
+			peer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				location := ""
+				if r.Method == http.MethodPost && r.URL.Path == "/cdrs" {
+					location = peerURL + "/cdrs/stored"
+				}
+				writePeerResponse(w, r, http.StatusOK, nil, location)
+			}))
+			defer peer.Close()
+			peerURL = peer.URL
+			c := New(peer.URL)
+			c.mu.Lock()
+			c.state.TokenC = "test-token"
+			c.state.Config.AutoCommandFlow = true
+			c.state.Config.AutoMeterRateKWh = 7.2
+			c.state.Endpoints = []Endpoint{
+				{Identifier: "sessions", Role: "RECEIVER", URL: peer.URL + "/sessions"},
+				{Identifier: "cdrs", Role: "RECEIVER", URL: peer.URL + "/cdrs"},
+				{Identifier: "locations", Role: "RECEIVER", URL: peer.URL + "/locations"},
+			}
+			start := &CommandRecord{ID: "start-1", Type: "START_SESSION", Request: map[string]any{
+				"response_url": peer.URL + "/callback/start", "location_id": "BKK-SILOM", "evse_uid": "SIL-EVSE-1",
+				"token": map[string]any{"country_code": "TH", "party_id": "EVT", "uid": "TEST-1", "type": "RFID", "contract_id": "TH-EVT-C1"},
+			}, ResponseURL: peer.URL + "/callback/start"}
+			c.state.Commands[start.ID] = start
+			c.mu.Unlock()
+			c.autoStartCommand(t.Context(), start)
+			// The page's meter drives this charge: the server loop is off and the switch is set afterwards.
+			c.stopAllAutoRuns()
+			c.mu.Lock()
+			c.state.Config.AutoCommandFlow = false
+			c.state.Config.StopAtMaxPrice = true
+			c.state.Config.StopAtMaxPriceExact = tc.exact
+			sessionID := fieldText(start.Result, "session_id")
+			tariff, _ := c.state.Objects["sessions"][sessionID].Snapshot["tariff"].(map[string]any)
+			tariff["max_price"] = map[string]any{"excl_vat": 0.2, "incl_vat": 0.2}
+			c.mu.Unlock()
+
+			result, err := c.callSessionAction(t.Context(), "advance", map[string]any{"session_id": sessionID, "target_kwh": 0.03})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if result["stopped_at_max_price"] != true {
+				t.Errorf("advance result = %v, want stopped_at_max_price", result)
+			}
+			c.mu.RLock()
+			defer c.mu.RUnlock()
+			body := c.state.Objects["sessions"][sessionID].Body
+			cdr := c.state.Objects["cdrs"]["CDR-"+sessionID]
+			if kwh := number(body["kwh"]); fieldText(body, "status") != "COMPLETED" || kwh < tc.wantMinKWh || kwh > tc.wantKWhs {
+				t.Errorf("Session = %s at %g kWh, want COMPLETED at %g..%g", fieldText(body, "status"), kwh, tc.wantMinKWh, tc.wantKWhs)
+			}
+			if cdr == nil || cdr.Delivery != "SENT" {
+				t.Errorf("CDR not sent: %+v", cdr)
+			}
+		})
+	}
+}
