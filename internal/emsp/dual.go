@@ -20,7 +20,7 @@ func (a *Controller) syncDualConnection(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	config, err := configFromRun(run)
+	config, err := a.configFromRun(run)
 	if err != nil {
 		return err
 	}

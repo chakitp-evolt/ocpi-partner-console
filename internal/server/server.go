@@ -21,14 +21,57 @@ type Server struct {
 	db     Pinger
 }
 
-// New mounts the probes next to the console and wraps both in the shared middleware.
-func New(logger *slog.Logger, db Pinger, console http.Handler) http.Handler {
+// Env is the console of one Evolt environment; dev has an empty Prefix and is served at the root.
+type Env struct {
+	ID      string
+	Prefix  string
+	Handler http.Handler
+}
+
+// New mounts the probes next to the console of every env and wraps them in the shared middleware.
+func New(logger *slog.Logger, db Pinger, envs []Env) http.Handler {
 	s := &Server{logger: logger, db: db}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", s.health)
 	mux.HandleFunc("GET /readiness", s.readiness)
-	mux.Handle("/", console)
+	mux.HandleFunc("GET /console-envs.js", envsScript(envs))
+	for _, env := range envs {
+		if env.Prefix == "" {
+			mux.Handle("/", env.Handler)
+			continue
+		}
+		// The console redirects to absolute paths, so the env roots are redirected here before the prefix is stripped.
+		mux.Handle("GET "+env.Prefix, redirect(env.Prefix+"/emsp"))
+		mux.Handle("GET "+env.Prefix+"/{$}", redirect(env.Prefix+"/emsp"))
+		mux.Handle("GET "+env.Prefix+"/dual", redirect(env.Prefix+"/dual/"))
+		mux.Handle(env.Prefix+"/", http.StripPrefix(env.Prefix, env.Handler))
+	}
 	return s.recoverer(s.accessLog(compressDashboard(mux)))
+}
+
+func redirect(target string) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, target, http.StatusTemporaryRedirect)
+	})
+}
+
+// envsScript tells the pages which env prefixes exist, so links and API calls stay inside the env they opened in.
+func envsScript(envs []Env) http.HandlerFunc {
+	type entry struct {
+		ID     string `json:"id"`
+		Prefix string `json:"prefix"`
+	}
+	list := make([]entry, 0, len(envs))
+	for _, env := range envs {
+		list = append(list, entry{ID: env.ID, Prefix: env.Prefix})
+	}
+	body, _ := json.Marshal(list)
+	script := []byte("window.CONSOLE_ENVS=" + string(body) + ";\n")
+	return func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/javascript; charset=utf-8")
+		w.Header().Set("Cache-Control", "no-cache")
+		_, _ = w.Write(script)
+	}
 }
 
 // health is the liveness probe and never touches the database.
@@ -73,9 +116,10 @@ func isProbe(path string) bool {
 	return path == "/health" || path == "/readiness"
 }
 
-// isOCPIPath covers the protocol surface Evolt calls, which must reach it byte-for-byte.
+// isOCPIPath covers the protocol surface Evolt calls, which must reach it byte-for-byte:
+// /ocpi/, /dual/ocpi/ and the same under every env prefix.
 func isOCPIPath(path string) bool {
-	return strings.HasPrefix(path, "/ocpi/") || strings.HasPrefix(path, "/dual/ocpi/")
+	return strings.Contains(path, "/ocpi/")
 }
 
 func writeJSON(w http.ResponseWriter, status int, value any) {

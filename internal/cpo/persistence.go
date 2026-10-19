@@ -8,7 +8,6 @@ import (
 	"sort"
 	"time"
 
-	"bitbucket.org/evoltth/evolt-ocpi-partner-console/internal/defaults"
 	"bitbucket.org/evoltth/evolt-ocpi-partner-console/internal/ocpi"
 	"bitbucket.org/evoltth/evolt-ocpi-partner-console/internal/store"
 )
@@ -33,6 +32,10 @@ func newPersistent(repository persistence, defaultPublicURL, profile string) (*C
 	controller := New(defaultPublicURL)
 	controller.profile = profile
 	controller.repository = repository
+	if source, ok := repository.(interface{ EvoltVersionsURL() string }); ok {
+		controller.evoltVersionsURL = source.EvoltVersionsURL()
+		controller.state.Config.EvoltVersionsURL = controller.evoltVersionsURL
+	}
 	controller.startSaver()
 	var snapshot store.CPOSnapshot
 	var err error
@@ -193,7 +196,7 @@ func (c *Controller) restore(snapshot store.CPOSnapshot) error {
 	}
 	// A run saved before these defaults existed keeps its own values; only blanks are filled.
 	if state.Config.EvoltVersionsURL == "" {
-		state.Config.EvoltVersionsURL = defaults.EvoltVersionsURL()
+		state.Config.EvoltVersionsURL = c.evoltVersionsURL
 	}
 	if state.Config.PartnerPublicURL == "" {
 		state.Config.PartnerPublicURL = c.defaultPublicURL

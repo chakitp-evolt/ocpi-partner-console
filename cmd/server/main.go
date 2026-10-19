@@ -31,7 +31,11 @@ func main() {
 		logger.Error("load config", "error", err)
 		os.Exit(1)
 	}
-	logger.Info("starting partner console", "port", cfg.Port, "database", cfg.RedactedDatabaseURL(), "public_base_url", cfg.PublicBaseURL)
+	envIDs := make([]string, 0, len(cfg.Envs))
+	for _, env := range cfg.Envs {
+		envIDs = append(envIDs, env.ID)
+	}
+	logger.Info("starting partner console", "port", cfg.Port, "database", cfg.RedactedDatabaseURL(), "public_base_url", cfg.PublicBaseURL, "envs", envIDs)
 
 	db, err := sql.Open("pgx", cfg.DatabaseURL)
 	if err != nil {
@@ -52,20 +56,36 @@ func main() {
 		os.Exit(1)
 	}
 
-	// The schema is applied by hand from scripts/db; boot fails here if it has not been.
 	repository := store.New(db, cfg.EncryptionKey)
 	if repository.WeakEncryptionKey() {
 		logger.Warn("ENCRYPTION_KEY is still a placeholder, falling back to the built-in development key")
 	}
-	console, err := emsp.New(repository, logger, emsp.Options{DefaultPublicURL: cfg.PublicBaseURL})
+	migrateCtx, migrateCancel := context.WithTimeout(context.Background(), 60*time.Second)
+	applied, err := repository.Migrate(migrateCtx)
+	migrateCancel()
+	for _, script := range applied {
+		logger.Info("applied schema script", "script", script)
+	}
 	if err != nil {
-		logger.Error("initialize console", "error", err)
+		logger.Error("migrate database", "error", err)
 		os.Exit(1)
+	}
+	// Every env gets its own console over the same database, scoped to its own connections.
+	var consoles consoleGroup
+	envs := make([]server.Env, 0, len(cfg.Envs))
+	for _, env := range cfg.Envs {
+		console, err := emsp.New(repository.ForEnv(env.ID, env.EvoltVersionsURL), logger, emsp.Options{DefaultPublicURL: env.PublicBaseURL, MountPath: env.Prefix})
+		if err != nil {
+			logger.Error("initialize console", "env", env.ID, "error", err)
+			os.Exit(1)
+		}
+		consoles = append(consoles, console)
+		envs = append(envs, server.Env{ID: env.ID, Prefix: env.Prefix, Handler: console.Handler()})
 	}
 
 	httpServer := &http.Server{
 		Addr:              ":" + cfg.Port,
-		Handler:           server.New(logger, repository, console.Handler()),
+		Handler:           server.New(logger, repository, envs),
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       30 * time.Second,
 		WriteTimeout:      60 * time.Second,
@@ -84,7 +104,7 @@ func main() {
 	signal.Notify(stop, syscall.SIGINT, syscall.SIGTERM)
 	<-stop
 
-	shutdown(httpServer, console, logger)
+	shutdown(httpServer, consoles, logger)
 }
 
 type httpShutdown interface {
@@ -94,6 +114,17 @@ type httpShutdown interface {
 
 type consoleFlusher interface {
 	Close(context.Context) error
+}
+
+// consoleGroup flushes the console of every env and reports every failure.
+type consoleGroup []consoleFlusher
+
+func (g consoleGroup) Close(ctx context.Context) error {
+	var err error
+	for _, console := range g {
+		err = errors.Join(err, console.Close(ctx))
+	}
+	return err
 }
 
 func shutdown(httpServer httpShutdown, console consoleFlusher, logger *slog.Logger) {

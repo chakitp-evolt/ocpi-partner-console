@@ -41,7 +41,7 @@ func (a *Controller) discover(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, http.StatusInternalServerError, "load run", err)
 		return
 	}
-	config, err := configFromRun(run)
+	config, err := a.configFromRun(run)
 	if err != nil {
 		writeAPIError(w, http.StatusInternalServerError, "parse config", err)
 		return
@@ -384,7 +384,7 @@ func (a *Controller) actionContext(w http.ResponseWriter, r *http.Request, secre
 		writeAPIError(w, http.StatusInternalServerError, "load run", err)
 		return run, Config{}, "", false
 	}
-	config, err := configFromRun(run)
+	config, err := a.configFromRun(run)
 	if err != nil {
 		writeAPIError(w, http.StatusInternalServerError, "parse config", err)
 		return run, config, "", false

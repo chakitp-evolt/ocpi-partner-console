@@ -40,7 +40,7 @@ func (a *Controller) inbound(module string, functional bool, handler ocpiHandler
 			writeAPIError(w, http.StatusInternalServerError, "load run", err)
 			return
 		}
-		config, err := configFromRun(run)
+		config, err := a.configFromRun(run)
 		if err != nil {
 			writeAPIError(w, http.StatusInternalServerError, "parse config", err)
 			return
@@ -255,11 +255,15 @@ func subtleEqual(a, b string) bool {
 }
 
 func absoluteRequestURL(r *http.Request) string {
+	return absoluteURL(r, r.URL)
+}
+
+func absoluteURL(r *http.Request, target *url.URL) string {
 	scheme := "http"
 	if r.TLS != nil {
 		scheme = "https"
 	}
-	return scheme + "://" + r.Host + r.URL.RequestURI()
+	return scheme + "://" + r.Host + ocpi.MountPrefix(r) + target.RequestURI()
 }
 
 func envelopeMap(envelope ocpi.Envelope) map[string]any {

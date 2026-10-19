@@ -11,16 +11,18 @@ function section(code,from,to){
   return code.slice(start,end);
 }
 
-for(const page of ['/emsp','/dual/emsp','/dual/']){
+for(const page of ['/emsp','/dual/emsp','/dual/','/stg/emsp','/stg/dual/emsp','/stg/dual/']){
+  const env=page.startsWith('/stg/')?'/stg':'',leg=page.slice(env.length);
   test(`connection action buttons use the registered routes on ${page}`,async()=>{
     const calls=[];
     const context=vm.createContext({
       document:{activeElement:null},location:{pathname:page},
       fetch:async(url,options)=>{calls.push({url,options});return {ok:true,json:async()=>({})}},
       toast:()=>{},showResult:()=>{},refresh:async()=>{},refreshDual:async()=>{},
-      dualRun:async(_,work)=>work(),
+      dualRun:async(_,work)=>work(),window:{CONSOLE_ENVS:[{id:'dev',prefix:''},{id:'stg',prefix:'/stg'}]},
     });
-    if(page==='/dual/'){
+    vm.runInContext(section(source('console.js'),'const consoleEnvs=','function scopeLinks('),context);
+    if(leg==='/dual/'){
       const code=source('dual.js');
       vm.runInContext("let dualFormDirty=false;"+section(code,'async function dualAPI(','async function dualRun(')+section(code,'function dualAction(','function dualDisconnect('),context);
     }else{
@@ -28,9 +30,9 @@ for(const page of ['/emsp','/dual/emsp','/dual/']){
       vm.runInContext(section(code,'async function request(','async function loadState(')+section(code,'async function runAction(','async function pull('),context);
     }
     for(const action of ['discover','register','check-credentials','rotate-credentials']){
-      await vm.runInContext(`${page==='/dual/'?'dualAction':'runAction'}('${action}')`,context);
+      await vm.runInContext(`${leg==='/dual/'?'dualAction':'runAction'}('${action}')`,context);
     }
-    assert.deepEqual(calls.map(call=>call.url),['discover','register','check-credentials','rotate-credentials'].map(action=>`${page.startsWith('/dual/')?'/dual':''}/api/emsp/actions/${action}`));
+    assert.deepEqual(calls.map(call=>call.url),['discover','register','check-credentials','rotate-credentials'].map(action=>`${env}${leg.startsWith('/dual/')?'/dual':''}/api/emsp/actions/${action}`));
     assert.ok(calls.every(call=>call.options.method==='POST'));
   });
 }

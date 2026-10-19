@@ -67,7 +67,7 @@ func (s *Store) LoadCPOProfile(ctx context.Context, profile string) (CPOSnapshot
 	var snapshot CPOSnapshot
 	snapshot.Profile = profile
 	var secrets, endpoints []byte
-	if err := s.db.QueryRowContext(ctx, `SELECT id,status,config,credentials,secrets,endpoints FROM partner_console_connections WHERE leg='cpo' AND profile=$1 ORDER BY updated_at DESC LIMIT 1`, profile).Scan(&snapshot.RunID, &snapshot.Status, &snapshot.Config, &snapshot.Credentials, &secrets, &endpoints); err != nil {
+	if err := s.db.QueryRowContext(ctx, `SELECT id,status,config,credentials,secrets,endpoints FROM partner_console_connections WHERE leg='cpo' AND profile=$1 AND env=$2 ORDER BY updated_at DESC LIMIT 1`, profile, s.env).Scan(&snapshot.RunID, &snapshot.Status, &snapshot.Config, &snapshot.Credentials, &secrets, &endpoints); err != nil {
 		return snapshot, err
 	}
 	var sealed map[string]struct {
@@ -162,10 +162,10 @@ func (s *Store) SaveCPO(ctx context.Context, snapshot CPOSnapshot) error {
 		endpointList = append(endpointList, map[string]string{"identifier": endpoint.Identifier, "role": endpoint.Role, "url": endpoint.URL})
 	}
 	endpoints, _ := json.Marshal(endpointList)
-	if _, err := tx.ExecContext(ctx, `INSERT INTO partner_console_connections(id,leg,profile,status,config,credentials,secrets,endpoints)
-		VALUES($1,'cpo',$2,$3,$4,$5,(SELECT COALESCE(jsonb_object_agg(k,jsonb_build_object('ciphertext',v,'updated_at',now()::text)),'{}'::jsonb) FROM jsonb_each_text($6::jsonb) AS t(k,v)),$7)
+	if _, err := tx.ExecContext(ctx, `INSERT INTO partner_console_connections(id,leg,profile,status,config,credentials,secrets,endpoints,env)
+		VALUES($1,'cpo',$2,$3,$4,$5,(SELECT COALESCE(jsonb_object_agg(k,jsonb_build_object('ciphertext',v,'updated_at',now()::text)),'{}'::jsonb) FROM jsonb_each_text($6::jsonb) AS t(k,v)),$7,$8)
 		ON CONFLICT(id) DO UPDATE SET status=excluded.status,config=excluded.config,credentials=excluded.credentials,secrets=excluded.secrets,endpoints=excluded.endpoints,updated_at=now()`,
-		snapshot.RunID, snapshot.Profile, snapshot.Status, snapshot.Config, snapshot.Credentials, secrets, endpoints); err != nil {
+		snapshot.RunID, snapshot.Profile, snapshot.Status, snapshot.Config, snapshot.Credentials, secrets, endpoints, s.env); err != nil {
 		return err
 	}
 	// Rows are upserted only when a value changed and removed when the snapshot no longer has them,

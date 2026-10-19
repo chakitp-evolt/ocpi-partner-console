@@ -16,7 +16,7 @@ async function request(path, options={}) {
   const busyButton=options.method&&options.method!=='GET'&&document.activeElement?.tagName==='BUTTON'?document.activeElement:null;
   if(busyButton){busyButton.disabled=true;busyButton.setAttribute('aria-busy','true')}
   try {
-    const response = await fetch((location.pathname.startsWith('/dual/')?'/dual':'')+path, {headers:{'Content-Type':'application/json'}, ...options});
+    const response = await fetch(appPath((pagePath().startsWith('/dual/')?'/dual':'')+path), {headers:{'Content-Type':'application/json'}, ...options});
     const data = await response.json().catch(() => ({}));
     if (!response.ok) throw new Error(data.detail || data.message || data.error || `HTTP ${response.status}`);
     return data;
@@ -52,7 +52,7 @@ async function resetRun(){
 async function runAction(action) { try { const data=await request(`/api/emsp/actions/${action}`,{method:'POST',body:'{}'}); toast(`${action} complete`); showResult(data); await refresh(); } catch(error){ toast(error.message,true); await refresh(); } }
 async function pull(module) { try { const data=await request('/api/emsp/actions/pull',{method:'POST',body:JSON.stringify({module})}); toast(`${module}: ${data.stored}/${data.received} stored`); await refresh(); } catch(error){ toast(error.message,true); await refresh(); } }
 
-function isDualInbound(){return location.pathname==='/dual/emsp'}
+function isDualInbound(){return pagePath()==='/dual/emsp'}
 function tokenKey(token){return JSON.stringify([String(token.uid||''),String(token.type||'')])}
 function savedTokens(){return (state?.tokens||[]).map(row=>row.body||row).filter(token=>token.uid&&token.type)}
 function tokenChoiceStorageKey(){return `dual-token-choice:${state.run.id}`}
@@ -192,7 +192,7 @@ function render() {
 
 function renderSteps() {
   const status=state.run.status, endpoints=state.endpoints||[], tokens=state.tokens||[], commands=state.commands||[], sessions=state.sessions||[], cdrs=state.cdrs||[];
-  if(location.pathname==='/dual/emsp'){mark(1,status==='REGISTERED');mark(2,true);mark(3,true)}
+  if(pagePath()==='/dual/emsp'){mark(1,status==='REGISTERED');mark(2,true);mark(3,true)}
   else{mark(1,true);mark(2,['DISCOVERED','REGISTERED'].includes(status)||endpoints.length>0);mark(3,status==='REGISTERED')}
   mark(4,(state.locations||[]).length>0||(state.tariffs||[]).length>0); mark(5,tokens.length>0); mark(6,commands.some(c=>c.type==='START_SESSION')); mark(7,sessions.length>0); mark(8,cdrs.length>0);
   const next=document.querySelector('.step:not(.done)'),nextStep=next?.dataset.step||'complete';
@@ -211,7 +211,7 @@ const inboundSteps={
   7:['ตรวจ Session และหยุดการชาร์จ','รอ Session เกิดจริง จากนั้นส่ง STOP_SESSION'],
   8:['ตรวจรายการค่าใช้จ่าย','รอหรือดึง CDR แล้วตรวจผลลัพธ์สุดท้าย']
 };
-function renderNextAction(){const next=document.querySelector('.step:not(.done)');if(!next){text('nextActionTitle','ครบทุกขั้นตอนแล้ว — ตรวจหลักฐาน');text('nextActionHint','ตรวจ Request history, Partner test data และ Export report เพื่อเก็บผลทดสอบ');text('nextActionButton','ดูผลทดสอบ');return}const step=Number(next.dataset.step),copy=inboundSteps[step],dual=location.pathname==='/dual/emsp';text('nextActionTitle',`${dual&&step>=4?step-2:step}. ${dual&&step===1?'Shared connection':copy[0]}`);text('nextActionHint',dual&&step===1?'ตั้งค่า Discover และ Credentials ที่หน้า Connection กลาง':copy[1]);text('nextActionButton','ไปขั้นตอนนี้')}
+function renderNextAction(){const next=document.querySelector('.step:not(.done)');if(!next){text('nextActionTitle','ครบทุกขั้นตอนแล้ว — ตรวจหลักฐาน');text('nextActionHint','ตรวจ Request history, Partner test data และ Export report เพื่อเก็บผลทดสอบ');text('nextActionButton','ดูผลทดสอบ');return}const step=Number(next.dataset.step),copy=inboundSteps[step],dual=pagePath()==='/dual/emsp';text('nextActionTitle',`${dual&&step>=4?step-2:step}. ${dual&&step===1?'Shared connection':copy[0]}`);text('nextActionHint',dual&&step===1?'ตั้งค่า Discover และ Credentials ที่หน้า Connection กลาง':copy[1]);text('nextActionButton','ไปขั้นตอนนี้')}
 function goToNextStep(){const next=document.querySelector('.step:not(.done)');if(!next){selectWorkspaceView('activity');document.querySelector('[data-workspace-panel="activity"]').scrollIntoView({behavior:'smooth',block:'start'});return}selectWorkspaceView('flow');document.querySelectorAll('.step').forEach(step=>step.classList.toggle('open',step===next));next.scrollIntoView({behavior:'smooth',block:'center'})}
 
 function renderTimeline(){renderRequestHistory('timeline',state.exchanges||[])}
@@ -264,5 +264,5 @@ function esc(v){return String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&l
 if(isDualInbound())for(const id of ['tokenUID','tokenType','contractID','whitelist','tokenValid'])for(const event of ['input','change'])document.getElementById(id).addEventListener(event,()=>{tokenEditDirty=true;renderSavedTokenPickers()});
 if(isDualInbound())for(const id of ['locationID','evseUID','connectorID'])document.getElementById(id).addEventListener('input',renderReceivedLocationOptions);
 
-const stream=new EventSource((location.pathname.startsWith('/dual/')?'/dual':'')+'/api/emsp/events');stream.addEventListener('ready',()=>{text('live','LIVE');document.getElementById('live').className='pill';refresh()});stream.addEventListener('changed',()=>refreshQueue.schedule());stream.onerror=()=>{text('live','RECONNECTING');document.getElementById('live').className='pill neutral'};
+const stream=new EventSource(appPath((pagePath().startsWith('/dual/')?'/dual':'')+'/api/emsp/events'));stream.addEventListener('ready',()=>{text('live','LIVE');document.getElementById('live').className='pill';refresh()});stream.addEventListener('changed',()=>refreshQueue.schedule());stream.onerror=()=>{text('live','RECONNECTING');document.getElementById('live').className='pill neutral'};
 refresh();

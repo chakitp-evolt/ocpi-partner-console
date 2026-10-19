@@ -26,6 +26,15 @@ import (
 
 func integrationDatabase(t *testing.T) *sql.DB {
 	t.Helper()
+	db := emptyIntegrationDatabase(t)
+	if _, err := store.New(db, "integration-test-encryption-key").Migrate(context.Background()); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	return db
+}
+
+func emptyIntegrationDatabase(t *testing.T) *sql.DB {
+	t.Helper()
 	databaseURL := os.Getenv("TEST_DATABASE_URL")
 	if databaseURL == "" {
 		t.Fatal("TEST_DATABASE_URL is required for integration tests")
@@ -40,13 +49,6 @@ func integrationDatabase(t *testing.T) *sql.DB {
 	t.Cleanup(func() { _ = db.Close() })
 	if _, err := db.ExecContext(context.Background(), `DROP SCHEMA public CASCADE; CREATE SCHEMA public`); err != nil {
 		t.Fatalf("reset isolated integration database: %v", err)
-	}
-	schema, err := os.ReadFile("../../scripts/db/001_init.sql")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := db.ExecContext(context.Background(), string(schema)); err != nil {
-		t.Fatalf("apply schema: %v", err)
 	}
 	return db
 }

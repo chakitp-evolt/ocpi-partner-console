@@ -21,6 +21,8 @@ import (
 
 type Options struct {
 	DefaultPublicURL string
+	// MountPath is the env prefix the console is served under: "" for dev, "/stg" for stg.
+	MountPath string
 }
 
 type Controller struct {
@@ -67,6 +69,7 @@ func New(repository *store.Store, logger *slog.Logger, options Options) (*Contro
 	if err != nil {
 		return nil, fmt.Errorf("initialize Partner CPO database: %w", err)
 	}
+	partner.SetMountPath(options.MountPath)
 	requestsController, err := requests.New(repository)
 	if err != nil {
 		return nil, fmt.Errorf("initialize saved requests: %w", err)
@@ -80,11 +83,28 @@ func New(repository *store.Store, logger *slog.Logger, options Options) (*Contro
 	if err != nil {
 		return nil, fmt.Errorf("initialize dual-role partner: %w", err)
 	}
+	dualPartner.SetMountPath(options.MountPath + "/dual")
 	app.dual = &Controller{store: repository, logger: logger, client: client, hub: newEventHub(), cpo: dualPartner, requests: requestsController, options: options, profile: "dual"}
 	if err := app.dual.syncDualConnection(context.Background()); err != nil {
 		return nil, fmt.Errorf("restore dual-role connection: %w", err)
 	}
 	return app, nil
+}
+
+// mountPath is where this page lives under the host: "", "/dual", "/stg" or "/stg/dual".
+func (a *Controller) mountPath() string {
+	if a.profile == "dual" {
+		return a.options.MountPath + "/dual"
+	}
+	return a.options.MountPath
+}
+
+func (a *Controller) defaultPublicURL() string {
+	base := strings.TrimRight(a.options.DefaultPublicURL, "/")
+	if a.profile == "dual" {
+		return base + "/dual"
+	}
+	return base
 }
 
 func (a *Controller) run(r *http.Request) (store.Run, error) {
@@ -218,7 +238,7 @@ func (a *Controller) createInitialToken(w http.ResponseWriter, r *http.Request) 
 		writeAPIError(w, http.StatusConflict, "connection is already registered", fmt.Errorf("reset the run before starting a new registration"))
 		return
 	}
-	config, err := configFromRun(run)
+	config, err := a.configFromRun(run)
 	if err != nil {
 		writeAPIError(w, http.StatusInternalServerError, "parse config", err)
 		return
@@ -250,11 +270,7 @@ func (a *Controller) resetRun(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, http.StatusInternalServerError, "load run", err)
 		return
 	}
-	defaultURL := a.options.DefaultPublicURL
-	if a.profile == "dual" {
-		defaultURL = strings.TrimRight(defaultURL, "/") + "/dual"
-	}
-	clean, err := a.store.ResetRunProfile(r.Context(), run.ID, a.profile, defaultURL)
+	clean, err := a.store.ResetRunProfile(r.Context(), run.ID, a.profile, a.defaultPublicURL())
 	if err != nil {
 		writeAPIError(w, http.StatusInternalServerError, "reset current partner run", err)
 		return
@@ -281,7 +297,7 @@ func (a *Controller) state(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// through configFromRun so the console shows the default URLs when the run has none saved
-	config, err := configFromRun(run)
+	config, err := a.configFromRun(run)
 	if err != nil {
 		writeAPIError(w, http.StatusInternalServerError, "parse config", err)
 		return
@@ -309,7 +325,7 @@ func (a *Controller) updateConfig(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, http.StatusInternalServerError, "load run", err)
 		return
 	}
-	current, err := configFromRun(run)
+	current, err := a.configFromRun(run)
 	if err != nil {
 		writeAPIError(w, http.StatusInternalServerError, "parse config", err)
 		return
@@ -324,10 +340,7 @@ func (a *Controller) updateConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if input.PartnerPublicURL != "" {
-		current.PartnerPublicURL = strings.TrimRight(input.PartnerPublicURL, "/")
-		if a.profile == "dual" && !strings.HasSuffix(current.PartnerPublicURL, "/dual") {
-			current.PartnerPublicURL += "/dual"
-		}
+		current.PartnerPublicURL = defaults.PublicURLAt(input.PartnerPublicURL, a.mountPath())
 	}
 	if input.EvoltVersionsURL != "" {
 		current.EvoltVersionsURL = input.EvoltVersionsURL
@@ -367,7 +380,7 @@ func (a *Controller) createToken(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, http.StatusInternalServerError, "load run", err)
 		return
 	}
-	config, _ := configFromRun(run)
+	config, _ := a.configFromRun(run)
 	var body map[string]any
 	if err := decodeJSON(r, &body); err != nil {
 		writeAPIError(w, http.StatusBadRequest, "invalid token JSON", err)
@@ -438,17 +451,17 @@ func (a *Controller) changed() {
 	a.hub.broadcast()
 }
 
-func configFromRun(run store.Run) (Config, error) {
+func (a *Controller) configFromRun(run store.Run) (Config, error) {
 	var config Config
 	if err := json.Unmarshal(run.Config, &config); err != nil {
 		return config, err
 	}
 	// A run saved before these defaults existed keeps its own values; only blanks are filled.
 	if config.EvoltVersionsURL == "" {
-		config.EvoltVersionsURL = defaults.EvoltVersionsURL()
+		config.EvoltVersionsURL = a.store.EvoltVersionsURL()
 	}
 	if config.PartnerPublicURL == "" {
-		config.PartnerPublicURL = defaults.PartnerPublicURL()
+		config.PartnerPublicURL = a.defaultPublicURL()
 	}
 	return config, nil
 }

@@ -4,14 +4,15 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>eMSP Partner · OCPI Partner Console</title>
-  <script src="/console.js?v=refresh-queue"></script>
+  <script src="/console-envs.js"></script>
+  <script src="/console.js?v=env-banner"></script>
   <link rel="stylesheet" href="/style.css">
   <link rel="stylesheet" href="/lane-tabs.css">
   <link rel="stylesheet" href="/public-url.css">
   <link rel="stylesheet" href="/branding.css">
   <link rel="stylesheet" href="/theme.css?v=20260910-5">
   <link rel="stylesheet" href="/requests.css?v=20260909-3">
-  <link rel="stylesheet" href="/workspace.css?v=20260917-full-evidence">
+  <link rel="stylesheet" href="/workspace.css?v=env-banner">
   <link rel="stylesheet" href="/dual.css?v=dual-evse-connectors">
 </head>
 <body class="qa-friendly inbound-page">
@@ -140,8 +141,8 @@
     <div class="modal-card"><span class="eyebrow">DESTRUCTIVE · MOCK SCOPE ONLY</span><h2 id="resetTitle">เริ่ม flow ใหม่ตั้งแต่ศูนย์</h2><p>จะลบ current partner run พร้อม setup, encrypted tokens, endpoints, objects, commands และ HTTP traces แล้วสร้าง run ใหม่ใน PostgreSQL เดิม</p><p class="hint warning">ไม่ drop database/schema และไม่แตะ Evolt หรือฐานอื่น แต่ข้อมูล run ปัจจุบันกู้คืนจาก UI ไม่ได้ ควร Export report ก่อน</p><label>พิมพ์ <strong>RESET</strong> เพื่อยืนยัน<input id="resetConfirmation" autocomplete="off" placeholder="RESET" oninput="syncResetButton()"></label><div class="modal-actions"><button class="ghost" onclick="closeReset()">ยกเลิก</button><button id="confirmReset" class="danger-button" disabled onclick="resetRun()">ล้าง current run</button></div></div>
   </div>
   <div id="toast" class="toast"></div>
-  <script src="/emsp.js?v=dual-evse-connectors"></script>
-  <script src="/data-prefill.js?v=20260909-3"></script>
+  <script src="/emsp.js?v=env-prefix"></script>
+  <script src="/data-prefill.js?v=env-prefix"></script>
   <script src="/request-samples.js?v=20260909-4"></script>
   <script src="/request-editor-view.js?v=20260909-4"></script>
   <script src="/request-editor-controls.js?v=20260909-3"></script>

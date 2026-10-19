@@ -119,6 +119,8 @@ type Controller struct {
 	mu               sync.RWMutex
 	client           *http.Client
 	defaultPublicURL string
+	evoltVersionsURL string
+	mountPath        string
 	state            memoryState
 	subscribers      map[chan struct{}]struct{}
 	repository       persistence
@@ -140,6 +142,7 @@ func New(defaultPublicURL string) *Controller {
 	c := &Controller{
 		client:           &http.Client{Timeout: 25 * time.Second, CheckRedirect: func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse }},
 		defaultPublicURL: defaultPublicURL,
+		evoltVersionsURL: defaults.EvoltVersionsURL(),
 		subscribers:      map[chan struct{}]struct{}{},
 		autoRuns:         map[string]*autoMeterRun{},
 		idleRuns:         map[string]*autoMeterRun{},
@@ -213,7 +216,7 @@ func (c *Controller) RegisterRoutesWithConnectionHandlers(mux *http.ServeMux, ha
 
 func (c *Controller) reset(withSeeds bool) {
 	c.state = memoryState{
-		Config: Config{EvoltVersionsURL: defaults.EvoltVersionsURL(), PartnerPublicURL: strings.TrimRight(c.defaultPublicURL, "/"), CountryCode: "TH", PartyID: "TST", BusinessName: "Evolt Partner CPO Mock", AutoMeterRateKWh: 7.2},
+		Config: Config{EvoltVersionsURL: c.evoltVersionsURL, PartnerPublicURL: strings.TrimRight(c.defaultPublicURL, "/"), CountryCode: "TH", PartyID: "TST", BusinessName: "Evolt Partner CPO Mock", AutoMeterRateKWh: 7.2},
 		Status: "SETUP", RunID: ocpi.NewID(), Endpoints: []Endpoint{}, Exchanges: []Exchange{}, Objects: emptyObjects(), Commands: map[string]*CommandRecord{}, Credentials: map[string]any{},
 	}
 	if withSeeds {
@@ -223,6 +226,13 @@ func (c *Controller) reset(withSeeds bool) {
 
 func emptyObjects() map[string]map[string]*Record {
 	return map[string]map[string]*Record{"locations": {}, "tariffs": {}, "sessions": {}, "cdrs": {}, "tokens": {}}
+}
+
+// SetMountPath tells the controller where its page lives, so a typed Partner public URL stays on it.
+func (c *Controller) SetMountPath(mountPath string) {
+	c.mu.Lock()
+	c.mountPath = mountPath
+	c.mu.Unlock()
 }
 
 func (c *Controller) StageInboundToken(token string) {
@@ -384,7 +394,7 @@ func (c *Controller) apiConfig(w http.ResponseWriter, r *http.Request) {
 		c.state.Config.EvoltVersionsURL = strings.TrimSpace(input.EvoltVersionsURL)
 	}
 	if input.PartnerPublicURL != "" {
-		c.state.Config.PartnerPublicURL = strings.TrimRight(strings.TrimSpace(input.PartnerPublicURL), "/")
+		c.state.Config.PartnerPublicURL = defaults.PublicURLAt(input.PartnerPublicURL, c.mountPath)
 	}
 	if input.CountryCode != "" {
 		c.state.Config.CountryCode = strings.ToUpper(strings.TrimSpace(input.CountryCode))

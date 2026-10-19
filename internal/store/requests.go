@@ -88,19 +88,20 @@ func (s *Store) AddRequestExchange(ctx context.Context, exchange RequestExchange
 	if err := json.Unmarshal(exchange.Response, &response); err != nil {
 		return err
 	}
-	_, err := s.db.ExecContext(ctx, `INSERT INTO partner_console_exchanges(saved_request_id,method,url,request_headers,request_body,http_status,response_headers,response_body,ocpi_status_code,error,result,duration_ms)
-		VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`, exchange.FixtureID, request.Method, request.URL, rawOrNil(request.Headers), rawOrNil(request.Body),
-		response.HTTPStatus, rawOrNil(response.Headers), rawOrNil(response.Body), response.OCPIStatusCode, response.Error, exchange.Status, exchange.DurationMS)
+	_, err := s.db.ExecContext(ctx, `INSERT INTO partner_console_exchanges(saved_request_id,method,url,request_headers,request_body,http_status,response_headers,response_body,ocpi_status_code,error,result,duration_ms,env)
+		VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`, exchange.FixtureID, request.Method, request.URL, rawOrNil(request.Headers), rawOrNil(request.Body),
+		response.HTTPStatus, rawOrNil(response.Headers), rawOrNil(response.Body), response.OCPIStatusCode, response.Error, exchange.Status, exchange.DurationMS, s.env)
 	return err
 }
 
+// RecentRequestExchanges lists the sends of this env; a NULL env was written before envs existed and is dev.
 func (s *Store) RecentRequestExchanges(ctx context.Context) ([]RequestExchange, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT seq,saved_request_id,
 		jsonb_build_object('method',method,'url',url,'headers',request_headers,'body',request_body),
 		CASE WHEN error IS NOT NULL THEN jsonb_build_object('error',error)
 		ELSE jsonb_build_object('http_status',http_status,'headers',response_headers,'body',response_body,'ocpi_status_code',ocpi_status_code) END,
 		result,duration_ms,created_at
-		FROM partner_console_exchanges WHERE saved_request_id IS NOT NULL ORDER BY created_at DESC LIMIT 100`)
+		FROM partner_console_exchanges WHERE saved_request_id IS NOT NULL AND COALESCE(env,'dev')=$1 ORDER BY created_at DESC LIMIT 100`, s.env)
 	if err != nil {
 		return nil, err
 	}
@@ -126,16 +127,16 @@ func (s *Store) LaneEndpointURLs(ctx context.Context, lane string) ([]string, er
 			profile = "dual"
 		}
 		rows, err = s.db.QueryContext(ctx, `SELECT e->>'url' FROM partner_console_connections, jsonb_array_elements(endpoints) WITH ORDINALITY AS t(e,n)
-			WHERE leg='emsp' AND profile=$1 AND e->>'platform'='remote'
-			ORDER BY updated_at DESC, n`, profile)
+			WHERE leg='emsp' AND profile=$1 AND env=$2 AND e->>'platform'='remote'
+			ORDER BY updated_at DESC, n`, profile, s.env)
 	case "CPO", "DUAL_CPO":
 		profile := "cpo"
 		if lane == "DUAL_CPO" {
 			profile = "dual"
 		}
 		rows, err = s.db.QueryContext(ctx, `SELECT e->>'url' FROM partner_console_connections, jsonb_array_elements(endpoints) WITH ORDINALITY AS t(e,n)
-			WHERE leg='cpo' AND profile=$1
-			ORDER BY updated_at DESC, n`, profile)
+			WHERE leg='cpo' AND profile=$1 AND env=$2
+			ORDER BY updated_at DESC, n`, profile, s.env)
 	default:
 		return nil, nil
 	}

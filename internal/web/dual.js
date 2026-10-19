@@ -11,7 +11,7 @@ function dualFeedback(message,error=false){const element=document.getElementById
 function dualToast(message,error=false){const element=document.getElementById('dualToast');element.textContent=message;element.className=`toast show ${error?'error':''}`;clearTimeout(dualToastTimer);dualToastTimer=setTimeout(()=>element.className='toast',4000)}
 
 async function dualAPI(path,options={}){
-  const response=await fetch('/dual'+path,{headers:{'Content-Type':'application/json'},cache:'no-store',...options});
+  const response=await fetch(appPath('/dual'+path),{headers:{'Content-Type':'application/json'},cache:'no-store',...options});
   const data=await response.json().catch(()=>({}));
   if(!response.ok)throw new Error(data.detail||data.message||data.error||`HTTP ${response.status}`);
   return data;
