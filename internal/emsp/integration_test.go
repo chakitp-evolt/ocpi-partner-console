@@ -13,6 +13,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -25,15 +27,6 @@ import (
 )
 
 func integrationDatabase(t *testing.T) *sql.DB {
-	t.Helper()
-	db := emptyIntegrationDatabase(t)
-	if _, err := store.New(db, "integration-test-encryption-key").Migrate(context.Background()); err != nil {
-		t.Fatalf("migrate: %v", err)
-	}
-	return db
-}
-
-func emptyIntegrationDatabase(t *testing.T) *sql.DB {
 	t.Helper()
 	databaseURL := os.Getenv("TEST_DATABASE_URL")
 	if databaseURL == "" {
@@ -49,6 +42,20 @@ func emptyIntegrationDatabase(t *testing.T) *sql.DB {
 	t.Cleanup(func() { _ = db.Close() })
 	if _, err := db.ExecContext(context.Background(), `DROP SCHEMA public CASCADE; CREATE SCHEMA public`); err != nil {
 		t.Fatalf("reset isolated integration database: %v", err)
+	}
+	scripts, err := filepath.Glob("../../scripts/db/*.sql")
+	if err != nil || len(scripts) == 0 {
+		t.Fatalf("find schema scripts: %v", err)
+	}
+	sort.Strings(scripts)
+	for _, script := range scripts {
+		schema, err := os.ReadFile(script)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := db.ExecContext(context.Background(), string(schema)); err != nil {
+			t.Fatalf("apply %s: %v", filepath.Base(script), err)
+		}
 	}
 	return db
 }

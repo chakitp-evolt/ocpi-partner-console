@@ -56,19 +56,10 @@ func main() {
 		os.Exit(1)
 	}
 
+	// The schema is applied by hand from scripts/db; boot fails here if it has not been.
 	repository := store.New(db, cfg.EncryptionKey)
 	if repository.WeakEncryptionKey() {
 		logger.Warn("ENCRYPTION_KEY is still a placeholder, falling back to the built-in development key")
-	}
-	migrateCtx, migrateCancel := context.WithTimeout(context.Background(), 60*time.Second)
-	applied, err := repository.Migrate(migrateCtx)
-	migrateCancel()
-	for _, script := range applied {
-		logger.Info("applied schema script", "script", script)
-	}
-	if err != nil {
-		logger.Error("migrate database", "error", err)
-		os.Exit(1)
 	}
 	// Every env gets its own console over the same database, scoped to its own connections.
 	var consoles consoleGroup

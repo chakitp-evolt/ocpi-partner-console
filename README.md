@@ -34,14 +34,19 @@ dev อยู่ที่ URL ข้างบน env อื่นที่ตั
 
 ### Database
 
-ตอน boot app รัน script ใน `scripts/db/` ที่ DB ยังไม่มีให้เองตามลำดับ (`001_init.sql` → `002_connection_env.sql`) — user ของ DB ต้องสร้าง/แก้ตารางได้ · log บอกว่ารัน script ไหน (`applied schema script`) · boot ปกติที่ไม่มีอะไรต้องทำไม่แตะ schema
+app **ไม่ migrate เอง** ต้องรัน script ด้วยมือครั้งเดียวก่อน deploy ครั้งแรก:
 
-- รู้ว่า script ไหนรันแล้วจาก schema เอง (`partner_console_connections` มีอยู่ = 001, คอลัมน์ `env` มีอยู่ = 002) จึงรู้จัก DB ที่เคยรัน script มือมาก่อนด้วย ไม่มีตารางจด version
-- DB ที่มีข้อมูลแล้ว: แถวเดิมทั้งหมดกลายเป็น env dev ข้อมูลไม่หาย
-- หลาย instance boot พร้อมกันรอกันด้วย advisory lock · script ล้ม = boot ไม่ผ่านพร้อมชื่อ script
-- ยังรันมือด้วย psql ได้เหมือนเดิม (`psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f scripts/db/<script>`) — แต่ละ script รันใน transaction เดียว และหยุดเองถ้า DB มีของที่มันสร้างอยู่แล้ว
+```bash
+psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f scripts/db/001_init.sql
+```
 
-ตารางทั้งหมดขึ้นต้นด้วย `partner_console_` จึงใช้ DB ร่วมกับ service อื่นได้โดยไม่ชนชื่อ แต่แนะนำ database แยก
+แล้วรัน `002` ต่อครั้งเดียว (ใช้กับ DB ที่มีข้อมูลแล้วได้ แถวเดิมทั้งหมดกลายเป็น dev และ version เดิมยังทำงานต่อได้ — รันก่อน deploy version ที่รองรับหลาย env):
+
+```bash
+psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f scripts/db/002_connection_env.sql
+```
+
+ต้องรันด้วย user ที่เป็นเจ้าของตาราง (`002` ใช้ `ALTER TABLE`) · ถ้ายังไม่ได้รัน app จะ boot ไม่ผ่าน (`relation ... does not exist` / `column "env" does not exist`) · script รันใน transaction เดียว และหยุดทันทีถ้า DB มีของที่มันสร้างอยู่แล้ว (ไม่แก้อะไร) · ตารางขึ้นต้นด้วย `partner_console_` จึงใช้ DB ร่วมกับ service อื่นได้โดยไม่ชนชื่อ แต่แนะนำ database แยก
 
 ### Environment
 
@@ -88,10 +93,12 @@ key เดียวกันอยู่หลายที่ ใช้ค่า
 ```bash
 cp .env.example .env
 make db-up      # Postgres เปล่าที่ :55432 (local เท่านั้น)
-make run        # http://localhost:8080 — สร้างตารางให้เองตอน boot
+psql "postgres://partner_console:partner_console@localhost:55432/partner_console" -v ON_ERROR_STOP=1 -f scripts/db/001_init.sql
+psql "postgres://partner_console:partner_console@localhost:55432/partner_console" -v ON_ERROR_STOP=1 -f scripts/db/002_connection_env.sql
+make run        # http://localhost:8080
 ```
 
-หรือ `make up` เพื่อรันทั้ง Postgres และ console ใน Docker
+หรือ `make up` เพื่อรันทั้ง Postgres และ console ใน Docker — ทั้งสองแบบไม่สร้างตารางให้ ต้องรัน script ก่อนเสมอ
 
 | Make | |
 |---|---|
