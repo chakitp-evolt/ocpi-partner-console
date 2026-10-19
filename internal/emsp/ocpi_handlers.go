@@ -540,7 +540,7 @@ func paginationHeaders(r *http.Request, total, offset, limit, returned int) http
 		query.Set("offset", strconv.Itoa(offset+limit))
 		query.Set("limit", strconv.Itoa(limit))
 		next.RawQuery = query.Encode()
-		headers.Set("Link", "<"+absoluteRequestURL(&http.Request{URL: &next, Host: r.Host, TLS: r.TLS})+">; rel=\"next\"")
+		headers.Set("Link", "<"+absoluteURL(r, &next)+">; rel=\"next\"")
 	}
 	return headers
 }

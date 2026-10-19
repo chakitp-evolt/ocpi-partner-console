@@ -1,3 +1,9 @@
+const consoleEnvs=window.CONSOLE_ENVS||[{id:'dev',prefix:''}];
+const currentEnv=consoleEnvs.find(env=>env.prefix&&(location.pathname===env.prefix||location.pathname.startsWith(env.prefix+'/')))||consoleEnvs.find(env=>!env.prefix)||{id:'dev',prefix:''};
+function pagePath(){return location.pathname.slice(currentEnv.prefix.length)||'/'}
+function appPath(path){return currentEnv.prefix+path}
+function scopeLinks(root=document){if(!currentEnv.prefix)return;root.querySelectorAll('a[href^="/"]:not([data-env-scoped])').forEach(link=>{const href=link.getAttribute('href');if(/^\/(emsp|cpo|dual|api)(\/|$)/.test(href)){link.setAttribute('href',appPath(href));link.dataset.envScoped='1'}})}
+function renderEnvSwitch(){if(consoleEnvs.length<2)return'';return `<nav class="env-switch" aria-label="Evolt environment">${consoleEnvs.map(env=>`<a href="${env.prefix+pagePath()}${location.search}" class="${env.id===currentEnv.id?'active':''}" ${env.id===currentEnv.id?'aria-current="page"':''}>${uiEscape(env.id.toUpperCase())}</a>`).join('')}</nav>`}
 const initialTheme=localStorage.getItem('ocpi-test-lab-theme')||(matchMedia('(prefers-color-scheme: dark)').matches?'dark':'light');
 document.documentElement.dataset.theme=initialTheme;
 
@@ -24,30 +30,30 @@ const iconPaths={
 function icon(name,className=''){return `<svg class="${className}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${iconPaths[name]||''}</svg>`}
 function applyTheme(theme){document.documentElement.dataset.theme=theme;localStorage.setItem('ocpi-test-lab-theme',theme);const button=document.getElementById('themeToggle');if(!button)return;button.innerHTML=icon(theme==='dark'?'sun':'moon');button.setAttribute('aria-label',theme==='dark'?'Switch to light mode':'Switch to dark mode');button.title=theme==='dark'?'Light mode':'Dark mode'}
 function toggleTheme(){applyTheme(document.documentElement.dataset.theme==='dark'?'light':'dark')}
-function consoleLink([path,title,description,image]){const active=path==='/dual/'?location.pathname.startsWith('/dual'):location.pathname===path;return `<a href="${path}" class="${active?'active':''}" ${active?'aria-current="page"':''}>${icon(image,'nav-icon')}<strong>${title}</strong><small>${description}</small></a>`}
+function consoleLink([path,title,description,image]){const active=path==='/dual/'?pagePath().startsWith('/dual'):pagePath()===path;return `<a href="${appPath(path)}" data-env-scoped="1" class="${active?'active':''}" ${active?'aria-current="page"':''}>${icon(image,'nav-icon')}<strong>${title}</strong><small>${description}</small></a>`}
 function renderConsoleNavigation(){
   const nav=document.querySelector('.lab-nav');if(!nav)return;
   const links=[['/emsp','eMSP Partner','จำลอง Partner eMSP','inbound'],['/cpo','CPO Partner','จำลอง Partner CPO','outbound'],['/dual/','Dual-role Partner','CPO + eMSP connection เดียว','exchange']];
   nav.innerHTML=`<span class="nav-section">PARTNER CONSOLE</span>${links.map(consoleLink).join('')}`;
   document.body.dataset.area='qa';
-  if(location.pathname.startsWith('/dual')){
+  if(pagePath().startsWith('/dual')){
     document.body.classList.add('dual-mode');
-    const dualLeg=location.pathname==='/dual/emsp'?'inbound':location.pathname==='/dual/cpo'?'outbound':'';
+    const dualLeg=pagePath()==='/dual/emsp'?'inbound':pagePath()==='/dual/cpo'?'outbound':'';
     if(!document.querySelector('.dual-role-nav')){
-      const selected=location.pathname==='/dual/emsp'?'inbound':location.pathname==='/dual/cpo'?'outbound':'connection';
+      const selected=pagePath()==='/dual/emsp'?'inbound':pagePath()==='/dual/cpo'?'outbound':'connection';
       const items=[['connection','/dual/','Connection'],['inbound','/dual/emsp','eMSP · รับจาก Evolt'],['outbound','/dual/cpo','CPO · ส่งให้ Evolt']];
-      document.querySelector('main')?.insertAdjacentHTML('afterbegin',`<nav class="dual-role-nav" aria-label="Dual-role Partner workspaces">${items.map(([id,path,label])=>`<a href="${path}" class="${selected===id?'active':''}" ${selected===id?'aria-current="page"':''}>${label}</a>`).join('')}</nav>`);
+      document.querySelector('main')?.insertAdjacentHTML('afterbegin',`<nav class="dual-role-nav" aria-label="Dual-role Partner workspaces">${items.map(([id,path,label])=>`<a href="${appPath(path)}" data-env-scoped="1" class="${selected===id?'active':''}" ${selected===id?'aria-current="page"':''}>${label}</a>`).join('')}</nav>`);
     }
-    if(location.pathname==='/dual/emsp'){
+    if(pagePath()==='/dual/emsp'){
       document.querySelector('.step[data-step="1"] .step-head h3').textContent='Shared connection';
       document.querySelector('#journeyPanel .panel-title h2').textContent='eMSP test flow · Evolt CPO';
       document.querySelectorAll('.step[data-step]').forEach(step=>{const number=Number(step.dataset.step);if(number>=4)step.querySelector('.number').textContent=String(number-2).padStart(2,'0')});
       document.querySelectorAll('.step[data-step="1"],.step[data-step="2"],.step[data-step="3"]').forEach(step=>{
         const body=step.querySelector('.step-body');
-        if(!body.querySelector('.dual-connection-link'))body.insertAdjacentHTML('afterbegin','<div class="dual-connection-link"><p>ตั้งค่า Discover และ Credentials ของทั้ง CPO + eMSP ที่หน้า Connection เดียว</p><a class="button" href="/dual/">เปิด Connection →</a></div>');
+        if(!body.querySelector('.dual-connection-link'))body.insertAdjacentHTML('afterbegin',`<div class="dual-connection-link"><p>ตั้งค่า Discover และ Credentials ของทั้ง CPO + eMSP ที่หน้า Connection เดียว</p><a class="button" href="${appPath('/dual/')}" data-env-scoped="1">เปิด Connection →</a></div>`);
       });
     }
-    if(location.pathname==='/dual/cpo'){
+    if(pagePath()==='/dual/cpo'){
       document.querySelector('#outboundFlow .panel-title h2').textContent='CPO test flow · Evolt eMSP';
     }
     if(dualLeg){
@@ -72,6 +78,7 @@ function renderConsoleNavigation(){
     }
     document.querySelectorAll('a[href="/api/emsp/export"],a[href="/api/cpo/export"]').forEach(link=>link.href='/dual'+link.getAttribute('href'));
   }
+  scopeLinks();
 }
 function selectWorkspaceView(view){
   document.querySelectorAll('[data-workspace-view]').forEach(button=>{button.classList.toggle('active',button.dataset.workspaceView===view);button.setAttribute('aria-current',button.dataset.workspaceView===view?'page':'false')});
@@ -156,7 +163,8 @@ document.addEventListener('DOMContentLoaded',()=>{
     const brand=document.querySelector('.brand strong');if(brand)brand.textContent='OCPI Partner Console';
     const subtitle=document.querySelector('.brand small');if(subtitle)subtitle.textContent='Evolt · OCPI 2.2.1 partner mock';
   }
-  const topbar=document.querySelector('.lab-topbar');if(topbar){topbar.insertAdjacentHTML('beforeend',`<div class="sidebar-display-controls"><button id="themeToggle" class="theme-toggle" type="button" onclick="toggleTheme()"></button></div>`);applyTheme(document.documentElement.dataset.theme)}
+  scopeLinks();
+  const topbar=document.querySelector('.lab-topbar');if(topbar){document.body.dataset.env=currentEnv.id;if(currentEnv.prefix){document.title=`[${currentEnv.id.toUpperCase()}] ${document.title}`;document.body.insertAdjacentHTML('afterbegin',`<div class="env-banner" role="status"><strong>${uiEscape(currentEnv.id.toUpperCase())}</strong><span>Evolt ${uiEscape(currentEnv.id)} · connection, token และข้อมูลทดสอบแยกจาก DEV</span><a href="${pagePath()}${location.search}">เปิดหน้านี้บน DEV →</a></div>`)}topbar.insertAdjacentHTML('beforeend',`<div class="sidebar-display-controls">${renderEnvSwitch()}<button id="themeToggle" class="theme-toggle" type="button" onclick="toggleTheme()"></button></div>`);applyTheme(document.documentElement.dataset.theme)}
   const metricIcons={EXCHANGES:'exchange',FINDINGS:'finding',SESSIONS:'session',CDRS:'receipt',LOCATIONS:'station',TARIFFS:'price','RECEIVED TOKENS':'token',COMMANDS:'command'};
   document.querySelectorAll('.metrics>div').forEach(item=>{
     const label=item.querySelector('small')?.textContent.trim().toUpperCase();
@@ -168,7 +176,7 @@ document.addEventListener('DOMContentLoaded',()=>{
   document.querySelectorAll('.step').forEach(step=>{
     const head=step.querySelector('.step-head'),number=Number(step.dataset.step);head.setAttribute('role','button');head.tabIndex=0;head.setAttribute('aria-expanded',String(step.classList.contains('open')));head.addEventListener('keydown',event=>{if(event.key==='Enter'||event.key===' '){event.preventDefault();openFlowStep(number)}});
     const body=step.querySelector('.step-body'),title=head.querySelector('h3').textContent;
-    const dualInbound=location.pathname==='/dual/emsp',displayNumber=dualInbound&&number>=4?number-2:number,total=dualInbound?6:8;
+    const dualInbound=pagePath()==='/dual/emsp',displayNumber=dualInbound&&number>=4?number-2:number,total=dualInbound?6:8;
     const previous=dualInbound&&number===4?1:number-1,next=dualInbound&&number===1?4:number+1;
     body.insertAdjacentHTML('afterbegin',`<div class="step-intro"><span class="eyebrow">Step ${displayNumber} of ${total}</span><h2>${uiEscape(title)}</h2></div>`);
     body.insertAdjacentHTML('beforeend',`<div class="step-footer"><button class="ghost" onclick="openFlowStep(${previous})" ${number===1?'disabled':''}>← Previous step</button>${number<8?`<button class="ghost" onclick="openFlowStep(${next})">Next step →</button>`:'<button class="ghost" onclick="selectWorkspaceView(\'activity\')">Review requests →</button>'}</div>`);

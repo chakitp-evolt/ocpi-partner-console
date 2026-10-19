@@ -4,13 +4,14 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>CPO Partner · OCPI Partner Console</title>
-  <script src="/console.js?v=refresh-queue"></script>
+  <script src="/console-envs.js"></script>
+  <script src="/console.js?v=env-banner"></script>
   <link rel="stylesheet" href="/style.css">
   <link rel="stylesheet" href="/branding.css">
   <link rel="stylesheet" href="/cpo.css?v=20261014-max-price-mode-4">
   <link rel="stylesheet" href="/theme.css?v=20260930-meter-checkbox">
   <link rel="stylesheet" href="/requests.css?v=20260909-3">
-  <link rel="stylesheet" href="/workspace.css?v=20260917-full-evidence">
+  <link rel="stylesheet" href="/workspace.css?v=env-banner">
   <link rel="stylesheet" href="/dual.css?v=dual-leg-workspaces">
 </head>
 <body class="qa-friendly outbound-page">
@@ -144,12 +145,12 @@
     <div class="modal-card reset-card"><span class="eyebrow">RESET OUTBOUND TEST DATA</span><h2 id="resetTitle">ล้างข้อมูลทดสอบ Outbound แล้วเริ่มใหม่</h2><p>ล้างเฉพาะข้อมูลจำลองของ Outbound QA</p><div class="reset-scope"><section><strong>ข้อมูลที่จะถูกล้าง</strong><span>Partner Mock credentials, catalogue, commands และ HTTP traces ของ Outbound QA</span></section><section><strong>ค่าที่ยังคงอยู่</strong><span>การเชื่อมต่อ Credentials และ History ใน API Workspace</span></section></div><label>พิมพ์ <strong>RESET</strong> เพื่อยืนยัน<input id="resetConfirmation" autocomplete="off" placeholder="RESET" oninput="syncResetButton()"></label><div class="modal-actions"><button class="ghost" onclick="closeReset()">ยกเลิก</button><button id="confirmReset" class="danger-button" disabled onclick="resetRun()">ล้างข้อมูลและเริ่มใหม่</button></div></div>
   </div>
   <div id="toast" class="toast"></div>
-  <script src="/cpo.js?v=20261014-max-price-mode-4"></script>
-  <script src="/data-prefill.js?v=20260909-3"></script>
+  <script src="/cpo.js?v=env-prefix"></script>
+  <script src="/data-prefill.js?v=env-prefix"></script>
   <script src="/request-samples.js?v=20260909-4"></script>
   <script src="/request-editor-view.js?v=20260909-4"></script>
   <script src="/request-editor-controls.js?v=20260909-3"></script>
   <script src="/requests.js?v=refresh-queue"></script>
-  <script src="/cpo-flow.js?v=dual-leg-workspaces"></script>
+  <script src="/cpo-flow.js?v=env-prefix"></script>
 </body>
 </html>

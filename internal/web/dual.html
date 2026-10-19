@@ -4,11 +4,12 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Dual-role Partner · OCPI 2.2.1</title>
-  <script src="/console.js?v=refresh-queue"></script>
+  <script src="/console-envs.js"></script>
+  <script src="/console.js?v=env-banner"></script>
   <link rel="stylesheet" href="/style.css">
   <link rel="stylesheet" href="/branding.css">
   <link rel="stylesheet" href="/theme.css">
-  <link rel="stylesheet" href="/workspace.css">
+  <link rel="stylesheet" href="/workspace.css?v=env-banner">
   <link rel="stylesheet" href="/dual.css?v=dual-status-export">
 </head>
 <body class="qa-friendly dual-page">
@@ -80,6 +81,6 @@
     <div class="modal-card dual-reset-card"><span class="eyebrow">RESET DUAL TEST DATA</span><h2 id="dualResetTitle">ล้างข้อมูลทดสอบ Dual ทั้งสองขา</h2><p>ล้าง connection, ข้อมูล eMSP และ CPO ของ Dual แล้วเริ่มรอบทดสอบใหม่ ข้อมูลของ Inbound QA และ Outbound QA เดิมไม่ถูกล้าง</p><p class="hint warning">ข้อมูล Dual ที่ล้างกู้คืนจาก UI ไม่ได้ ควร Export จากทั้งสองขาก่อน</p><label>พิมพ์ <strong>RESET</strong> เพื่อยืนยัน<input id="dualResetConfirmation" autocomplete="off" placeholder="RESET" oninput="dualSyncResetButton()"></label><div class="modal-actions"><button type="button" class="ghost" onclick="dualCloseReset()">ยกเลิก</button><button id="dualConfirmReset" type="button" class="danger-button" disabled onclick="dualReset()">ล้าง Dual ทั้งสองขา</button></div></div>
   </div>
   <div id="dualToast" class="toast" role="status" aria-live="polite"></div>
-  <script src="/dual.js?v=dual-reset-sidebar"></script>
+  <script src="/dual.js?v=env-prefix"></script>
 </body>
 </html>

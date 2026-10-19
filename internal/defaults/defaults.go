@@ -4,7 +4,10 @@
 // a run inside the Evolt network and a partner deployed outside it.
 package defaults
 
-import "os"
+import (
+	"os"
+	"strings"
+)
 
 const (
 	// partnerPublicURL is the address Evolt calls the mock back on; deployments set PUBLIC_BASE_URL.
@@ -21,6 +24,16 @@ func PartnerPublicURL() string { return env("PUBLIC_BASE_URL", partnerPublicURL)
 
 // EvoltVersionsURL answers EVOLT_VERSIONS_URL when the deployment sets it.
 func EvoltVersionsURL() string { return env("EVOLT_VERSIONS_URL", evoltVersionsURL) }
+
+// PublicURLAt keeps a typed Partner public URL on the page's mount path ("", "/dual", "/stg", "/stg/dual"),
+// so the Versions URL the mock hands to Evolt reaches that same page.
+func PublicURLAt(publicURL, mountPath string) string {
+	publicURL = strings.TrimRight(strings.TrimSpace(publicURL), "/")
+	if mountPath != "" && !strings.HasSuffix(publicURL, mountPath) {
+		publicURL += mountPath
+	}
+	return publicURL
+}
 
 func env(key, fallback string) string {
 	if value := os.Getenv(key); value != "" {

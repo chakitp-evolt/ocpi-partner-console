@@ -10,7 +10,7 @@ const outboundSteps=[
   {title:'Review evidence',hint:'ตรวจ request/response และผลใน Evolt',module:'activity',detail:'ดู Request history และ QA request results แล้วตรวจ Evolt UI/DB ที่ได้รับสิทธิ์แยกต่างหาก สถานะ Observed ใน flow หมายถึงมีหลักฐานบางส่วน ไม่ใช่ test case ผ่านทั้งหมด'}
 ];
 function activeOutboundSteps(){
-  if(location.pathname!=='/dual/cpo')return outboundSteps;
+  if(pagePath()!=='/dual/cpo')return outboundSteps;
   return [{title:'Shared connection',hint:'Credentials ชุดเดียวสำหรับทั้ง CPO และ eMSP',module:'connection',detail:'ตั้งค่า Discover และ Register ที่หน้า Connection กลาง แล้วกลับมาทดสอบขา CPO ที่นี่'},...outboundSteps.slice(2)];
 }
 function outboundObserved(){
@@ -24,7 +24,7 @@ function renderOutboundFlow(){
   const step=steps[outboundFlowStep-1],body=document.getElementById('outboundFlowBody');
   body.innerHTML=`<span class="eyebrow">Step ${outboundFlowStep} of ${steps.length}</span><h2>${step.title}</h2><p>${step.detail}</p><div class="action-row" id="outboundStepActions"></div><p class="ir-hint">เปิดส่วนนี้และ Previous / Next เป็นการเปลี่ยนหน้าที่ดูเท่านั้น ไม่ส่ง request ไม่แก้ข้อมูล และไม่ทำเครื่องหมายว่า test ผ่าน</p><div class="outbound-step-nav"><button class="ghost" id="outPrev" ${outboundFlowStep===1?'disabled':''}>← Previous step</button><button class="ghost" id="outNext" ${outboundFlowStep===steps.length?'disabled':''}>Next step →</button></div>`;
   const actions=document.getElementById('outboundStepActions'),add=(label,fn)=>{const b=document.createElement('button');b.textContent=label;b.addEventListener('click',fn);actions.append(b)};
-  add(step.module==='connection'?'Open connection':step.module==='activity'?'Open request history':`Open ${step.module}`,()=>{if(step.module==='connection'){if(location.pathname.startsWith('/dual/')){location.href='/dual/';return}selectWorkspaceView('connection');document.getElementById('connectionPanel').open=true}else if(step.module==='activity')selectWorkspaceView('activity');else openOutboundCatalogue(step.module)});
+  add(step.module==='connection'?'Open connection':step.module==='activity'?'Open request history':`Open ${step.module}`,()=>{if(step.module==='connection'){if(pagePath().startsWith('/dual/')){location.href=appPath('/dual/');return}selectWorkspaceView('connection');document.getElementById('connectionPanel').open=true}else if(step.module==='activity')selectWorkspaceView('activity');else openOutboundCatalogue(step.module)});
   if(['locations','tariffs','sessions','cdrs','tokens'].includes(step.module))add('Edit QA request',()=>openInboundRequests(step.module));
   if(step.module==='tokens')add('View received commands',()=>openOutboundCatalogue('commands'));
   document.getElementById('outPrev').onclick=()=>openOutboundFlow(outboundFlowStep-1);document.getElementById('outNext').onclick=()=>openOutboundFlow(outboundFlowStep+1);

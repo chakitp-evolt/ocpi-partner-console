@@ -10,6 +10,17 @@ OCPI 2.2.1 partner mock สำหรับทดสอบ roaming กับ Evol
 
 `/` redirect ไป `/emsp` · ทุกหน้ามีแผง Requests สำหรับเก็บและยิง request ที่เขียนเอง
 
+### หลาย env ใน instance เดียว
+
+dev อยู่ที่ URL ข้างบน env อื่นที่ตั้งใน `CONSOLE_ENVS` อยู่ใต้ `/<env>` ทุกหน้า เช่น `CONSOLE_ENVS=stg`:
+
+| | dev | stg |
+|---|---|---|
+| หน้าเว็บ | `/emsp` · `/cpo` · `/dual/` | `/stg/emsp` · `/stg/cpo` · `/stg/dual/` |
+| Versions URL ที่ให้ Evolt | `<PUBLIC_BASE_URL>/ocpi/emsp/versions` | `<PUBLIC_BASE_URL>/stg/ocpi/emsp/versions` |
+
+แต่ละ env มี connection, token, object และ CPO state ของตัวเอง Reset ของ env หนึ่งไม่แตะอีก env · saved request ใช้ร่วมกันทุก env แต่ยิงด้วย token และเก็บประวัติแยกตาม env ที่เปิดอยู่ · สลับ env ด้วยปุ่ม DEV / STG มุมล่างของแถบด้านข้าง · env ที่ไม่ใช่ dev มีแถบสีม่วงบนสุดบอกชื่อ env พร้อมลิงก์กลับหน้าเดียวกันบน DEV และชื่อแท็บขึ้นต้นด้วย [STG]
+
 ## Deploy (สำหรับ DevOps)
 
 | | |
@@ -23,13 +34,14 @@ OCPI 2.2.1 partner mock สำหรับทดสอบ roaming กับ Evol
 
 ### Database
 
-app **ไม่ migrate เอง** ต้องรัน script ด้วยมือครั้งเดียวก่อน deploy ครั้งแรก:
+ตอน boot app รัน script ใน `scripts/db/` ที่ DB ยังไม่มีให้เองตามลำดับ (`001_init.sql` → `002_connection_env.sql`) — user ของ DB ต้องสร้าง/แก้ตารางได้ · log บอกว่ารัน script ไหน (`applied schema script`) · boot ปกติที่ไม่มีอะไรต้องทำไม่แตะ schema
 
-```bash
-psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f scripts/db/001_init.sql
-```
+- รู้ว่า script ไหนรันแล้วจาก schema เอง (`partner_console_connections` มีอยู่ = 001, คอลัมน์ `env` มีอยู่ = 002) จึงรู้จัก DB ที่เคยรัน script มือมาก่อนด้วย ไม่มีตารางจด version
+- DB ที่มีข้อมูลแล้ว: แถวเดิมทั้งหมดกลายเป็น env dev ข้อมูลไม่หาย
+- หลาย instance boot พร้อมกันรอกันด้วย advisory lock · script ล้ม = boot ไม่ผ่านพร้อมชื่อ script
+- ยังรันมือด้วย psql ได้เหมือนเดิม (`psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f scripts/db/<script>`) — แต่ละ script รันใน transaction เดียว และหยุดเองถ้า DB มีของที่มันสร้างอยู่แล้ว
 
-ถ้ายังไม่ได้รัน app จะ boot ไม่ผ่าน (`relation ... does not exist`) · script รันใน transaction เดียว และหยุดทันทีถ้ามีตาราง `partner_console_*` อยู่แล้ว (ไม่แก้อะไร) จึงใช้ DB ร่วมกับ service อื่นได้โดยไม่ชนชื่อตาราง แต่แนะนำ database แยก
+ตารางทั้งหมดขึ้นต้นด้วย `partner_console_` จึงใช้ DB ร่วมกับ service อื่นได้โดยไม่ชนชื่อ แต่แนะนำ database แยก
 
 ### Environment
 
@@ -43,10 +55,14 @@ psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f scripts/db/001_init.sql
 | `DATABASE_SSLMODE` | | `disable` | |
 | `ENCRYPTION_KEY` | ✓ | | secret — ใช้เข้ารหัส OCPI token ใน DB **ห้ามเปลี่ยนหลังมีข้อมูล** ไม่งั้น token เดิมถอดไม่ได้ |
 | `PUBLIC_BASE_URL` | ✓ | `http://localhost:8080` | URL ที่ Evolt (adapter-ocpi) เรียกกลับมาหา mock ได้ |
-| `EVOLT_VERSIONS_URL` | | `http://bff-external-service.dev.evtech.dev/api/ocpi/versions` | Versions URL ของ Evolt ที่ mock ไป register ด้วย |
+| `EVOLT_VERSIONS_URL` | | `http://bff-external-service.dev.evtech.dev/api/ocpi/versions` | Versions URL ของ Evolt (dev) ที่ mock ไป register ด้วย |
+| `CONSOLE_ENVS` | | | env เพิ่มเติมคั่นด้วย `,` เช่น `stg` — ตัวพิมพ์เล็ก ตัวเลข หรือ `-` ห้ามใช้ `dev` `emsp` `cpo` `dual` `api` `ocpi` |
+| `EVOLT_VERSIONS_URL_<ENV>` | ✓** | | Versions URL ของแต่ละ env ใน `CONSOLE_ENVS` เช่น `EVOLT_VERSIONS_URL_STG` (`-` เป็น `_`) |
 | `SECRET_ENV_FILE` | | | path ไฟล์ secret เพิ่มเติม |
 
 \* ต้องมี `DATABASE_URL` หรือ `DATABASE_HOST` + `DATABASE_USER` + `DATABASE_NAME`
+
+\*\* บังคับเมื่อมี env นั้นใน `CONSOLE_ENVS` — ขาด = boot ไม่ผ่าน เพื่อไม่ให้ env ใหม่ชี้ dev เงียบๆ
 
 ### Vault
 
@@ -72,11 +88,10 @@ key เดียวกันอยู่หลายที่ ใช้ค่า
 ```bash
 cp .env.example .env
 make db-up      # Postgres เปล่าที่ :55432 (local เท่านั้น)
-psql "postgres://partner_console:partner_console@localhost:55432/partner_console" -v ON_ERROR_STOP=1 -f scripts/db/001_init.sql
-make run        # http://localhost:8080
+make run        # http://localhost:8080 — สร้างตารางให้เองตอน boot
 ```
 
-หรือ `make up` เพื่อรันทั้ง Postgres และ console ใน Docker — ทั้งสองแบบไม่สร้างตารางให้ ต้องรัน script ก่อนเสมอ
+หรือ `make up` เพื่อรันทั้ง Postgres และ console ใน Docker
 
 | Make | |
 |---|---|

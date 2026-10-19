@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -214,6 +215,16 @@ func ParsePagination(request *http.Request) (dateFrom, dateTo *time.Time, offset
 		}
 	}
 	return
+}
+
+// MountPrefix is the path http.StripPrefix removed before the handler ran ("/dual", "/stg", "/stg/dual"),
+// so a URL built from r.URL can point back at the same page.
+func MountPrefix(r *http.Request) string {
+	original, err := url.ParseRequestURI(r.RequestURI)
+	if err != nil || !strings.HasSuffix(original.Path, r.URL.Path) {
+		return ""
+	}
+	return strings.TrimSuffix(original.Path, r.URL.Path)
 }
 
 func HasErrors(findings []Finding) bool {

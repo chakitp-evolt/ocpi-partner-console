@@ -22,6 +22,9 @@ type Store struct {
 	db      *sql.DB
 	aead    cipher.AEAD
 	weakKey bool
+	// env scopes every connection lookup; evoltVersionsURL seeds a new connection of that env.
+	env              string
+	evoltVersionsURL string
 }
 
 type Run struct {
@@ -61,7 +64,14 @@ func New(db *sql.DB, encryptionKey string) *Store {
 	if err != nil {
 		panic(err)
 	}
-	return &Store{db: db, aead: aead, weakKey: weak}
+	return &Store{db: db, aead: aead, weakKey: weak, env: "dev"}
+}
+
+// ForEnv shares the database and key but only sees the connections of env.
+func (s *Store) ForEnv(env, evoltVersionsURL string) *Store {
+	scoped := *s
+	scoped.env, scoped.evoltVersionsURL = env, evoltVersionsURL
+	return &scoped
 }
 
 func (s *Store) WeakEncryptionKey() bool { return s.weakKey }
@@ -84,9 +94,9 @@ func (s *Store) EnsureRunProfile(ctx context.Context, profile, defaultPublicURL 
 	run.ID = newID()
 	run.Name = "Evolt black-box run"
 	run.Status = "SETUP"
-	config := defaultRunConfig(defaultPublicURL)
+	config := s.defaultRunConfig(defaultPublicURL)
 	body, _ := json.Marshal(config)
-	_, err = s.db.ExecContext(ctx, `INSERT INTO partner_console_connections(id,leg,name,status,config,profile) VALUES($1,'emsp',$2,$3,$4,$5)`, run.ID, run.Name, run.Status, body, profile)
+	_, err = s.db.ExecContext(ctx, `INSERT INTO partner_console_connections(id,leg,name,status,config,profile,env) VALUES($1,'emsp',$2,$3,$4,$5,$6)`, run.ID, run.Name, run.Status, body, profile, s.env)
 	if err == nil {
 		return s.CurrentRunProfile(ctx, profile)
 	}
@@ -112,8 +122,8 @@ func (s *Store) ResetRunProfile(ctx context.Context, runID, profile, defaultPubl
 		return Run{}, sql.ErrNoRows
 	}
 	run := Run{ID: newID(), Name: "Evolt black-box run", Status: "SETUP"}
-	run.Config, _ = json.Marshal(defaultRunConfig(defaultPublicURL))
-	if _, err := tx.ExecContext(ctx, `INSERT INTO partner_console_connections(id,leg,name,status,config,profile) VALUES($1,'emsp',$2,$3,$4,$5)`, run.ID, run.Name, run.Status, run.Config, profile); err != nil {
+	run.Config, _ = json.Marshal(s.defaultRunConfig(defaultPublicURL))
+	if _, err := tx.ExecContext(ctx, `INSERT INTO partner_console_connections(id,leg,name,status,config,profile,env) VALUES($1,'emsp',$2,$3,$4,$5,$6)`, run.ID, run.Name, run.Status, run.Config, profile, s.env); err != nil {
 		return Run{}, err
 	}
 	if err := tx.Commit(); err != nil {
@@ -122,10 +132,10 @@ func (s *Store) ResetRunProfile(ctx context.Context, runID, profile, defaultPubl
 	return run, nil
 }
 
-func defaultRunConfig(defaultPublicURL string) map[string]any {
+func (s *Store) defaultRunConfig(defaultPublicURL string) map[string]any {
 	return map[string]any{
 		"partner_public_url":      defaultPublicURL,
-		"evolt_versions_url":      defaults.EvoltVersionsURL(),
+		"evolt_versions_url":      s.EvoltVersionsURL(),
 		"country_code":            "TH",
 		"party_id":                "TST",
 		"business_name":           "OCPI Partner Mock",
@@ -134,13 +144,21 @@ func defaultRunConfig(defaultPublicURL string) map[string]any {
 	}
 }
 
+// EvoltVersionsURL is the Versions URL a new connection of this env starts with.
+func (s *Store) EvoltVersionsURL() string {
+	if s.evoltVersionsURL != "" {
+		return s.evoltVersionsURL
+	}
+	return defaults.EvoltVersionsURL()
+}
+
 func (s *Store) CurrentRun(ctx context.Context) (Run, error) {
 	return s.CurrentRunProfile(ctx, "emsp")
 }
 
 func (s *Store) CurrentRunProfile(ctx context.Context, profile string) (Run, error) {
 	var run Run
-	err := s.db.QueryRowContext(ctx, `SELECT id, name, status, config FROM partner_console_connections WHERE leg='emsp' AND profile=$1 ORDER BY created_at LIMIT 1`, profile).Scan(&run.ID, &run.Name, &run.Status, &run.Config)
+	err := s.db.QueryRowContext(ctx, `SELECT id, name, status, config FROM partner_console_connections WHERE leg='emsp' AND profile=$1 AND env=$2 ORDER BY created_at LIMIT 1`, profile, s.env).Scan(&run.ID, &run.Name, &run.Status, &run.Config)
 	return run, err
 }
 

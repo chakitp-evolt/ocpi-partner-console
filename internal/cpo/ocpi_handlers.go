@@ -385,7 +385,7 @@ func absoluteURL(r *http.Request, target *url.URL) string {
 	if r.TLS != nil || strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https") {
 		scheme = "https"
 	}
-	return scheme + "://" + r.Host + target.RequestURI()
+	return scheme + "://" + r.Host + ocpi.MountPrefix(r) + target.RequestURI()
 }
 
 func envelopeAsMap(envelope ocpi.Envelope) map[string]any {

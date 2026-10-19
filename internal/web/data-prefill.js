@@ -1,4 +1,4 @@
-function qaLane(){const lane=document.body?.classList?.contains('outbound-page')?'CPO':'EMSP';return location.pathname.startsWith('/dual/')?'DUAL_'+lane:lane}
+function qaLane(){const lane=document.body?.classList?.contains('outbound-page')?'CPO':'EMSP';return pagePath().startsWith('/dual/')?'DUAL_'+lane:lane}
 function qaIsOutbound(){return qaLane().endsWith('CPO')}
 function qaConfig(){return qaIsOutbound()?(state?.config||{}):(state?.run?.config||{})}
 function qaRows(module){return (qaIsOutbound()?state?.objects?.[module]:state?.[module])||[]}
