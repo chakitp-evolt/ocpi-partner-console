@@ -76,7 +76,7 @@ func main() {
 
 	httpServer := &http.Server{
 		Addr:              ":" + cfg.Port,
-		Handler:           server.New(logger, repository, envs),
+		Handler:           server.New(logger, repository, envs, server.WithConsoleAuth(cfg.ConsoleUsername, cfg.ConsolePassword)),
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       30 * time.Second,
 		WriteTimeout:      60 * time.Second,

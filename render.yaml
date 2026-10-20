@@ -1,0 +1,25 @@
+services:
+  - type: web
+    name: evolt-ocpi-partner-console
+    runtime: docker
+    plan: free
+    region: singapore
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    healthCheckPath: /health
+    autoDeployTrigger: "off"
+    envVars:
+      - key: PORT
+        value: "10000"
+      - key: TZ
+        value: Asia/Bangkok
+      - key: DATABASE_URL
+        sync: false
+      - key: ENCRYPTION_KEY
+        generateValue: true
+      - key: CONSOLE_USERNAME
+        value: admin
+      - key: CONSOLE_PASSWORD
+        sync: false
+      - key: EVOLT_VERSIONS_URL
+        sync: false

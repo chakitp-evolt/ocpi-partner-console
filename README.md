@@ -23,6 +23,25 @@ dev อยู่ที่ URL ข้างบน env อื่นที่ตั
 
 ## Deploy (สำหรับ DevOps)
 
+### Render + Neon
+
+สำเนานี้ใช้ GitHub `chakitp-evolt/ocpi-partner-console` และมี [render.yaml](render.yaml) สำหรับ Render Web Service แบบ Docker + Neon แยกต่างหาก โดยไม่สร้าง Render Postgres
+
+1. สร้าง Neon project/database แยกสำหรับ console และเลือก region ใกล้ Singapore
+2. ใน Neon SQL Editor เลือก database นั้น แล้วรันเนื้อหาของ `scripts/db/001_init.sql` ตามด้วย `scripts/db/002_connection_env.sql` **ครั้งเดียวตามลำดับ** ก่อน deploy แอป หรือใช้ `psql` ตามหัวข้อ Database ด้านล่างกับ direct connection string ของ Neon
+3. จาก Neon → Connect คัดลอก pooled connection string (hostname มี `-pooler`) พร้อม `sslmode=require` เป็น `DATABASE_URL` เก็บ query parameters ที่ Neon ให้มา และเพิ่ม `connect_timeout=15` ได้ ตัวอย่างอยู่ใน [.env.render.example](.env.render.example)
+4. หลัง push โค้ดและ config ขึ้น GitHub แล้ว ใน Render เลือก **New → Blueprint** เชื่อม repo นี้ เลือก branch ที่มี `render.yaml` แล้วกรอก `DATABASE_URL`, `CONSOLE_PASSWORD` และ `EVOLT_VERSIONS_URL` ที่ Render ถาม ค่า Versions URL ต้องเป็น endpoint ของ Evolt ที่เรียกถึงได้จากอินเทอร์เน็ต
+5. Render สร้าง `ENCRYPTION_KEY` ให้ครั้งแรก และตั้ง username เป็น `admin` (เปลี่ยนได้ใน Environment) เก็บ key นี้ไว้กับฐานข้อมูลเดิมเสมอ รวมถึงเมื่อสร้าง service ใหม่หรือ restore DB
+6. เปิด URL `https://<ชื่อ-service>.onrender.com` แล้ว login ด้วย `CONSOLE_USERNAME` / `CONSOLE_PASSWORD` ตรวจ `/health` และ `/readiness` ต้องได้ HTTP 200
+
+`PUBLIC_BASE_URL` ใช้ `RENDER_EXTERNAL_URL` อัตโนมัติ จึงไม่ต้องเดาชื่อโดเมนก่อน deploy ถ้าใช้ custom domain ค่อยตั้ง `PUBLIC_BASE_URL=https://<โดเมนจริง>` ก่อนสร้าง connection ใหม่ ส่วน connection ที่บันทึกไว้แล้วต้องแก้ Partner public URL ในหน้าเว็บให้ตรงด้วย
+
+Blueprint ตั้ง region `singapore`, plan `free`, health check `/health` และปิด auto deploy (`autoDeployTrigger: off`) ให้สั่ง deploy เองหลังเปลี่ยนโค้ด โดยใช้ **1 instance** เสมอ เพราะ mock มี state และ SSE ใน process หากต้องรับ OCPI callback ต่อเนื่อง ให้เปลี่ยนเป็น paid compute: free service พักเมื่อไม่มี traffic และการปลุกอาจทำให้ request แรกหรือ callback timeout ได้ การ restart/redeploy จะตัด SSE และ state ใน memory บางส่วน
+
+หน้าเว็บ, assets และ console API ใช้ Basic Auth ส่วน `/ocpi/*`, `/dual/ocpi/*` และ path เหล่านี้ใต้ env prefix ใช้ OCPI authentication ตามเดิม จึงให้ Evolt เรียกกลับได้โดยไม่ต้องส่งรหัสผ่านหน้าเว็บ `/health` และ `/readiness` เปิดให้ health probe เรียกได้ บน Render แอปจะไม่เริ่มถ้าไม่มีรหัสผ่าน console หรือใช้ encryption key ตัวอย่าง
+
+อ้างอิง: [Render Blueprint](https://render.com/docs/blueprint-spec), [Render environment variables](https://render.com/docs/environment-variables), [Render free services](https://render.com/docs/free), [Neon Go](https://neon.com/docs/guides/go), [Neon pooling](https://neon.com/docs/connect/connection-pooling)
+
 | | |
 |---|---|
 | Image | `Dockerfile` ที่ root (multi-stage, debian-slim, non-root `evoltuser`) — หน้าเว็บ embed อยู่ใน binary |
@@ -59,7 +78,8 @@ psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f scripts/db/002_connection_env.sql
 | `DATABASE_PORT` | | `5432` | |
 | `DATABASE_SSLMODE` | | `disable` | |
 | `ENCRYPTION_KEY` | ✓ | | secret — ใช้เข้ารหัส OCPI token ใน DB **ห้ามเปลี่ยนหลังมีข้อมูล** ไม่งั้น token เดิมถอดไม่ได้ |
-| `PUBLIC_BASE_URL` | ✓ | `http://localhost:8080` | URL ที่ Evolt (adapter-ocpi) เรียกกลับมาหา mock ได้ |
+| `PUBLIC_BASE_URL` | | `RENDER_EXTERNAL_URL` บน Render, อื่น ๆ `http://localhost:8080` | URL ที่ Evolt (adapter-ocpi) เรียกกลับมาหา mock ได้; ตั้งเองเมื่อใช้ custom domain |
+| `CONSOLE_USERNAME` / `CONSOLE_PASSWORD` | บน Render ✓ | | Basic Auth สำหรับหน้าเว็บและ console API ต้องตั้งทั้งคู่; local ไม่ตั้งได้ |
 | `EVOLT_VERSIONS_URL` | | `http://bff-external-service.dev.evtech.dev/api/ocpi/versions` | Versions URL ของ Evolt (dev) ที่ mock ไป register ด้วย |
 | `CONSOLE_ENVS` | | | env เพิ่มเติมคั่นด้วย `,` เช่น `stg` — ตัวพิมพ์เล็ก ตัวเลข หรือ `-` ห้ามใช้ `dev` `emsp` `cpo` `dual` `api` `ocpi` |
 | `EVOLT_VERSIONS_URL_<ENV>` | ✓** | | Versions URL ของแต่ละ env ใน `CONSOLE_ENVS` เช่น `EVOLT_VERSIONS_URL_STG` (`-` เป็น `_`) |
@@ -84,7 +104,7 @@ key เดียวกันอยู่หลายที่ ใช้ค่า
 
 ### Network
 
-- หน้าเว็บและ `/api/*` **ไม่มี auth** และ `/api/*/tokens` แสดง OCPI token ได้ — ต้องเปิดเฉพาะใน network ภายใน/VPN ห้าม expose public
+- หน้าเว็บและ console API ต้องตั้ง `CONSOLE_USERNAME` + `CONSOLE_PASSWORD` ก่อนเปิด public และใช้ HTTPS; ถ้าไม่ตั้งจะใช้ได้เฉพาะ network ภายใน/VPN เพราะ `/api/*/tokens` แสดง OCPI token ได้
 - `/ocpi/*` และ `/dual/ocpi/*` ต้องให้ Evolt (adapter-ocpi) เรียกถึงผ่าน `PUBLIC_BASE_URL`
 - mock ต้องเรียกออกไปหา `EVOLT_VERSIONS_URL` และ endpoint ที่ Evolt ประกาศได้
 

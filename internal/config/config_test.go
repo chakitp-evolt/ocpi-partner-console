@@ -34,7 +34,39 @@ func clearEnv(t *testing.T, keys ...string) {
 
 func quietLogger() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard, nil)) }
 
-var configKeys = []string{"PORT", "DATABASE_URL", "DATABASE_HOST", "DATABASE_PORT", "DATABASE_USER", "DATABASE_PASSWORD", "DATABASE_NAME", "DATABASE_SSLMODE", "ENCRYPTION_KEY", "PUBLIC_BASE_URL", "SECRET_ENV_FILE"}
+var configKeys = []string{"PORT", "DATABASE_URL", "DATABASE_HOST", "DATABASE_PORT", "DATABASE_USER", "DATABASE_PASSWORD", "DATABASE_NAME", "DATABASE_SSLMODE", "ENCRYPTION_KEY", "PUBLIC_BASE_URL", "RENDER_EXTERNAL_URL", "RENDER", "CONSOLE_USERNAME", "CONSOLE_PASSWORD", "SECRET_ENV_FILE", "CONSOLE_ENVS"}
+
+func TestLoadRender(t *testing.T) {
+	for _, tc := range []struct {
+		name, username, password, key string
+		wantErr                       bool
+	}{
+		{name: "requires dashboard credentials", key: "0123456789abcdef0123456789abcdef", wantErr: true},
+		{name: "rejects incomplete credentials", username: "admin", key: "0123456789abcdef0123456789abcdef", wantErr: true},
+		{name: "rejects development encryption key", username: "admin", password: "test-password", key: "local-development-only-change-me", wantErr: true},
+		{name: "rejects long placeholder key", username: "admin", password: "test-password", key: "replace-with-output-of-openssl-rand-hex-32", wantErr: true},
+		{name: "accepts deployment settings", username: "admin", password: "test-password", key: "0123456789abcdef0123456789abcdef"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			clearEnv(t, configKeys...)
+			useEnvFiles(t)
+			t.Setenv("RENDER", "true")
+			t.Setenv("RENDER_EXTERNAL_URL", "https://console.onrender.com/")
+			t.Setenv("PORT", "10000")
+			t.Setenv("DATABASE_URL", "postgresql://console:password@db-pooler.neon.tech/neondb?sslmode=require&connect_timeout=15")
+			t.Setenv("ENCRYPTION_KEY", tc.key)
+			t.Setenv("CONSOLE_USERNAME", tc.username)
+			t.Setenv("CONSOLE_PASSWORD", tc.password)
+			cfg, err := Load(quietLogger())
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("Load error = %v, wantErr %v", err, tc.wantErr)
+			}
+			if err == nil && (cfg.Port != "10000" || cfg.PublicBaseURL != "https://console.onrender.com" || cfg.Envs[0].PublicBaseURL != cfg.PublicBaseURL || cfg.ConsoleUsername != tc.username || cfg.ConsolePassword != tc.password || cfg.DatabaseURL != os.Getenv("DATABASE_URL")) {
+				t.Fatal("deployment settings were not preserved")
+			}
+		})
+	}
+}
 
 func TestLoadReadsVaultFileNextToConfigSecretFile(t *testing.T) {
 	clearEnv(t, configKeys...)

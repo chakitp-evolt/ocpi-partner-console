@@ -17,9 +17,12 @@ type Pinger interface {
 }
 
 type Server struct {
-	logger *slog.Logger
-	db     Pinger
+	logger      *slog.Logger
+	db          Pinger
+	consoleAuth func(http.Handler) http.Handler
 }
+
+type Option func(*Server)
 
 // Env is the console of one Evolt environment; dev has an empty Prefix and is served at the root.
 type Env struct {
@@ -29,22 +32,26 @@ type Env struct {
 }
 
 // New mounts the probes next to the console of every env and wraps them in the shared middleware.
-func New(logger *slog.Logger, db Pinger, envs []Env) http.Handler {
-	s := &Server{logger: logger, db: db}
+func New(logger *slog.Logger, db Pinger, envs []Env, options ...Option) http.Handler {
+	s := &Server{logger: logger, db: db, consoleAuth: func(h http.Handler) http.Handler { return h }}
+	for _, option := range options {
+		option(s)
+	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", s.health)
 	mux.HandleFunc("GET /readiness", s.readiness)
-	mux.HandleFunc("GET /console-envs.js", envsScript(envs))
+	mux.Handle("GET /console-envs.js", s.consoleAuth(envsScript(envs)))
 	for _, env := range envs {
+		handler := s.consoleAuth(env.Handler)
 		if env.Prefix == "" {
-			mux.Handle("/", env.Handler)
+			mux.Handle("/", handler)
 			continue
 		}
 		// The console redirects to absolute paths, so the env roots are redirected here before the prefix is stripped.
 		mux.Handle("GET "+env.Prefix, redirect(env.Prefix+"/emsp"))
 		mux.Handle("GET "+env.Prefix+"/{$}", redirect(env.Prefix+"/emsp"))
 		mux.Handle("GET "+env.Prefix+"/dual", redirect(env.Prefix+"/dual/"))
-		mux.Handle(env.Prefix+"/", http.StripPrefix(env.Prefix, env.Handler))
+		mux.Handle(env.Prefix+"/", http.StripPrefix(env.Prefix, handler))
 	}
 	return s.recoverer(s.accessLog(compressDashboard(mux)))
 }

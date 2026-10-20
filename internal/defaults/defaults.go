@@ -18,9 +18,10 @@ const (
 	evoltVersionsURL = "http://bff-external-service.dev.evtech.dev/api/ocpi/versions"
 )
 
-// PartnerPublicURL answers PUBLIC_BASE_URL when the deployment sets it, so a fresh run is
-// seeded with the address that instance is actually reachable on.
-func PartnerPublicURL() string { return env("PUBLIC_BASE_URL", partnerPublicURL) }
+// PartnerPublicURL prefers a custom domain, then Render's assigned HTTPS URL.
+func PartnerPublicURL() string {
+	return env("PUBLIC_BASE_URL", env("RENDER_EXTERNAL_URL", partnerPublicURL))
+}
 
 // EvoltVersionsURL answers EVOLT_VERSIONS_URL when the deployment sets it.
 func EvoltVersionsURL() string { return env("EVOLT_VERSIONS_URL", evoltVersionsURL) }

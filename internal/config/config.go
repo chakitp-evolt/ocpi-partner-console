@@ -20,10 +20,12 @@ import (
 var envFiles = []string{"/vault/secrets/secret.env", "/vault/secrets/config", "./config/secret.env", ".env"}
 
 type Config struct {
-	Port          string
-	DatabaseURL   string
-	EncryptionKey string
-	PublicBaseURL string
+	Port            string
+	DatabaseURL     string
+	EncryptionKey   string
+	PublicBaseURL   string
+	ConsoleUsername string
+	ConsolePassword string
 	// Envs starts with dev at the root URL, then every CONSOLE_ENVS entry under /<id>.
 	Envs []Env
 }
@@ -59,17 +61,31 @@ func Load(logger *slog.Logger) (Config, error) {
 	if key == "" {
 		return Config{}, errors.New("ENCRYPTION_KEY is required")
 	}
+	username, password := os.Getenv("CONSOLE_USERNAME"), os.Getenv("CONSOLE_PASSWORD")
+	if (username == "") != (password == "") {
+		return Config{}, errors.New("CONSOLE_USERNAME and CONSOLE_PASSWORD must be set together")
+	}
+	if os.Getenv("RENDER") == "true" {
+		if username == "" {
+			return Config{}, errors.New("CONSOLE_USERNAME and CONSOLE_PASSWORD are required on Render")
+		}
+		if len(key) < 32 || strings.Contains(key, "change-me") || strings.Contains(key, "replace-with") {
+			return Config{}, errors.New("ENCRYPTION_KEY must be a random secret of at least 32 characters on Render")
+		}
+	}
 	publicBaseURL := strings.TrimRight(defaults.PartnerPublicURL(), "/")
 	envs, err := parseEnvs(publicBaseURL)
 	if err != nil {
 		return Config{}, err
 	}
 	return Config{
-		Port:          env("PORT", "8080"),
-		DatabaseURL:   databaseURL,
-		EncryptionKey: key,
-		PublicBaseURL: publicBaseURL,
-		Envs:          envs,
+		Port:            env("PORT", "8080"),
+		DatabaseURL:     databaseURL,
+		EncryptionKey:   key,
+		PublicBaseURL:   publicBaseURL,
+		ConsoleUsername: username,
+		ConsolePassword: password,
+		Envs:            envs,
 	}, nil
 }
 
