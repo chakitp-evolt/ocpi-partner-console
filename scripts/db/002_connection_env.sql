@@ -1,6 +1,6 @@
 -- evolt-ocpi-partner-console: one connection per page and leg in every Evolt environment (PostgreSQL 14+)
 --
--- Run once, by hand, after 001_init.sql and before deploying the version that reads CONSOLE_ENVS:
+-- Applied automatically at startup when the environment schema is absent. Optional standalone use after 001:
 --   psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f scripts/db/002_connection_env.sql
 --
 -- - The whole script is one transaction: any error rolls everything back.

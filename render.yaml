@@ -20,6 +20,6 @@ services:
       - key: CONSOLE_USERNAME
         value: admin
       - key: CONSOLE_PASSWORD
-        sync: false
+        generateValue: true
       - key: EVOLT_VERSIONS_URL
         sync: false

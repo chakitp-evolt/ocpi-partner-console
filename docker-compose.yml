@@ -1,4 +1,4 @@
-# Local development only. The database starts empty: apply scripts/db by hand before running the console.
+# Local development only. The console initializes the database on startup.
 services:
   postgres:
     image: postgres:16-alpine

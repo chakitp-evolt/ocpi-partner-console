@@ -1,6 +1,6 @@
 -- evolt-ocpi-partner-console: initial schema (PostgreSQL 14+)
 --
--- Run once, by hand, on the console's own empty database before the first deploy:
+-- Applied automatically at startup on an empty database. Optional standalone use:
 --   psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f scripts/db/001_init.sql
 --
 -- - The whole script is one transaction: any error rolls everything back.

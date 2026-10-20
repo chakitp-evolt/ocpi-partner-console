@@ -19,6 +19,7 @@ import (
 	"bitbucket.org/evoltth/evolt-ocpi-partner-console/internal/emsp"
 	"bitbucket.org/evoltth/evolt-ocpi-partner-console/internal/server"
 	"bitbucket.org/evoltth/evolt-ocpi-partner-console/internal/store"
+	dbschema "bitbucket.org/evoltth/evolt-ocpi-partner-console/scripts/db"
 )
 
 // maxOpenConns stays small: one instance, a handful of testers.
@@ -56,7 +57,15 @@ func main() {
 		os.Exit(1)
 	}
 
-	// The schema is applied by hand from scripts/db; boot fails here if it has not been.
+	schemaCtx, schemaCancel := context.WithTimeout(context.Background(), 90*time.Second)
+	applied, err := dbschema.Ensure(schemaCtx, db)
+	schemaCancel()
+	if err != nil {
+		logger.Error("initialize database schema", "error", err)
+		os.Exit(1)
+	}
+	logger.Info("database schema ready", "applied", applied)
+
 	repository := store.New(db, cfg.EncryptionKey)
 	if repository.WeakEncryptionKey() {
 		logger.Warn("ENCRYPTION_KEY is still a placeholder, falling back to the built-in development key")

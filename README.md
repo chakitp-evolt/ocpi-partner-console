@@ -27,12 +27,11 @@ dev อยู่ที่ URL ข้างบน env อื่นที่ตั
 
 สำเนานี้ใช้ GitHub `chakitp-evolt/ocpi-partner-console` และมี [render.yaml](render.yaml) สำหรับ Render Web Service แบบ Docker + Neon แยกต่างหาก โดยไม่สร้าง Render Postgres
 
-1. สร้าง Neon project/database แยกสำหรับ console และเลือก region ใกล้ Singapore
-2. ใน Neon SQL Editor เลือก database นั้น แล้วรันเนื้อหาของ `scripts/db/001_init.sql` ตามด้วย `scripts/db/002_connection_env.sql` **ครั้งเดียวตามลำดับ** ก่อน deploy แอป หรือใช้ `psql` ตามหัวข้อ Database ด้านล่างกับ direct connection string ของ Neon
-3. จาก Neon → Connect คัดลอก pooled connection string (hostname มี `-pooler`) พร้อม `sslmode=require` เป็น `DATABASE_URL` เก็บ query parameters ที่ Neon ให้มา และเพิ่ม `connect_timeout=15` ได้ ตัวอย่างอยู่ใน [.env.render.example](.env.render.example)
-4. หลัง push โค้ดและ config ขึ้น GitHub แล้ว ใน Render เลือก **New → Blueprint** เชื่อม repo นี้ เลือก branch ที่มี `render.yaml` แล้วกรอก `DATABASE_URL`, `CONSOLE_PASSWORD` และ `EVOLT_VERSIONS_URL` ที่ Render ถาม ค่า Versions URL ต้องเป็น endpoint ของ Evolt ที่เรียกถึงได้จากอินเทอร์เน็ต
-5. Render สร้าง `ENCRYPTION_KEY` ให้ครั้งแรก และตั้ง username เป็น `admin` (เปลี่ยนได้ใน Environment) เก็บ key นี้ไว้กับฐานข้อมูลเดิมเสมอ รวมถึงเมื่อสร้าง service ใหม่หรือ restore DB
-6. เปิด URL `https://<ชื่อ-service>.onrender.com` แล้ว login ด้วย `CONSOLE_USERNAME` / `CONSOLE_PASSWORD` ตรวจ `/health` และ `/readiness` ต้องได้ HTTP 200
+1. สร้าง Neon project/database เปล่าแยกสำหรับ console และเลือก region ใกล้ Singapore **ไม่ต้องรัน SQL เอง** แอปสร้างตารางตอนเริ่มรันให้
+2. จาก Neon → Connect คัดลอก pooled connection string (hostname มี `-pooler`) พร้อม `sslmode=require` เป็น `DATABASE_URL` เก็บ query parameters ที่ Neon ให้มา และเพิ่ม `connect_timeout=15` ได้ ตัวอย่างอยู่ใน [.env.render.example](.env.render.example)
+3. ใน Render เลือก **New → Blueprint** เชื่อม repo นี้ เลือก branch `main` แล้วกรอก `DATABASE_URL` และ `EVOLT_VERSIONS_URL` ที่ Render ถาม ค่า Versions URL ต้องเป็น endpoint ของ Evolt ที่เรียกถึงได้จากอินเทอร์เน็ต
+4. Render สร้าง `ENCRYPTION_KEY` และ `CONSOLE_PASSWORD` ให้ครั้งแรก ดูค่าในหน้า Environment ของ service ส่วน username เป็น `admin` (เปลี่ยนได้ใน Environment) เก็บ encryption key นี้ไว้กับฐานข้อมูลเดิมเสมอ รวมถึงเมื่อสร้าง service ใหม่หรือ restore DB
+5. กด deploy แอปจะรอ DB พร้อม สร้าง schema แล้วเปิด HTTP server จากนั้นเปิด URL `https://<ชื่อ-service>.onrender.com` แล้ว login ด้วย `CONSOLE_USERNAME` / `CONSOLE_PASSWORD` ตรวจ `/health` และ `/readiness` ต้องได้ HTTP 200
 
 `PUBLIC_BASE_URL` ใช้ `RENDER_EXTERNAL_URL` อัตโนมัติ จึงไม่ต้องเดาชื่อโดเมนก่อน deploy ถ้าใช้ custom domain ค่อยตั้ง `PUBLIC_BASE_URL=https://<โดเมนจริง>` ก่อนสร้าง connection ใหม่ ส่วน connection ที่บันทึกไว้แล้วต้องแก้ Partner public URL ในหน้าเว็บให้ตรงด้วย
 
@@ -53,19 +52,17 @@ Blueprint ตั้ง region `singapore`, plan `free`, health check `/health` �
 
 ### Database
 
-app **ไม่ migrate เอง** ต้องรัน script ด้วยมือครั้งเดียวก่อน deploy ครั้งแรก:
+แอป **สร้าง schema อัตโนมัติก่อนเปิดรับ request** โดย embed `scripts/db/001_init.sql` และ `002_connection_env.sql` ไว้ใน binary ไม่ต้องติดตั้ง `psql` หรือรัน pre-deploy command ใน Render
 
-```bash
-psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f scripts/db/001_init.sql
-```
+- DB เปล่า: สร้างตารางและเพิ่ม env schema ใน transaction เดียว
+- Restart/redeploy: ตรวจ schema แล้วข้ามส่วนที่มีครบอยู่แล้ว ข้อมูลเดิมยังอยู่
+- DB ที่เคยรัน SQL เอง: รองรับทั้ง `001` อย่างเดียวและ `001` + `002` โดยใช้ข้อมูลเดิม
+- มี transaction advisory lock ป้องกัน startup หลาย process ชนกัน ใช้ได้กับ pooled connection ของ Neon
+- ถ้า schema ไม่ครบหรือ migration ผิดพลาด จะ rollback และหยุด startup ไม่ล้างตาราง
 
-แล้วรัน `002` ต่อครั้งเดียว (ใช้กับ DB ที่มีข้อมูลแล้วได้ แถวเดิมทั้งหมดกลายเป็น dev และ version เดิมยังทำงานต่อได้ — รันก่อน deploy version ที่รองรับหลาย env):
+ใช้ database owner ของ Neon หรือ user ที่มีสิทธิ์ `CREATE` ใน schema และ `ALTER` ตารางของ console ตารางขึ้นต้นด้วย `partner_console_` แนะนำ database แยก Log `database schema ready` บอกชื่อ script ที่เพิ่งทำ หรือ `[]` เมื่อ schema พร้อมอยู่แล้ว
 
-```bash
-psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f scripts/db/002_connection_env.sql
-```
-
-ต้องรันด้วย user ที่เป็นเจ้าของตาราง (`002` ใช้ `ALTER TABLE`) · ถ้ายังไม่ได้รัน app จะ boot ไม่ผ่าน (`relation ... does not exist` / `column "env" does not exist`) · script รันใน transaction เดียว และหยุดทันทีถ้า DB มีของที่มันสร้างอยู่แล้ว (ไม่แก้อะไร) · ตารางขึ้นต้นด้วย `partner_console_` จึงใช้ DB ร่วมกับ service อื่นได้โดยไม่ชนชื่อ แต่แนะนำ database แยก
+ไฟล์ `.sql` ยังใช้รันเองได้ แต่ไม่จำเป็นสำหรับ deploy และแต่ละไฟล์ตั้งใจให้รันด้วยมือได้ครั้งเดียวเท่านั้น
 
 ### Environment
 
@@ -113,12 +110,10 @@ key เดียวกันอยู่หลายที่ ใช้ค่า
 ```bash
 cp .env.example .env
 make db-up      # Postgres เปล่าที่ :55432 (local เท่านั้น)
-psql "postgres://partner_console:partner_console@localhost:55432/partner_console" -v ON_ERROR_STOP=1 -f scripts/db/001_init.sql
-psql "postgres://partner_console:partner_console@localhost:55432/partner_console" -v ON_ERROR_STOP=1 -f scripts/db/002_connection_env.sql
-make run        # http://localhost:8080
+make run        # สร้าง schema ให้อัตโนมัติ แล้วเปิด http://localhost:8080
 ```
 
-หรือ `make up` เพื่อรันทั้ง Postgres และ console ใน Docker — ทั้งสองแบบไม่สร้างตารางให้ ต้องรัน script ก่อนเสมอ
+หรือ `make up` เพื่อรันทั้ง Postgres และ console ใน Docker พร้อมสร้างตารางอัตโนมัติ
 
 | Make | |
 |---|---|
@@ -140,7 +135,7 @@ internal/requests/   saved requests (Requests panel)
 internal/store/      PostgreSQL repository
 internal/ocpi/       OCPI envelope, headers, validation helpers
 internal/web/        หน้าเว็บ (emsp / cpo / dual) embed เข้า binary
-scripts/db/          SQL ที่ต้องรันด้วยมือ
+scripts/db/          SQL + startup schema initializer (embed ใน binary)
 ```
 
 | ตาราง | เก็บอะไร |

@@ -28,7 +28,7 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/* \
     && useradd --create-home --shell /usr/sbin/nologin evoltuser
 
-# Pages and assets are embedded in the binary, nothing else to copy.
+# Pages, assets and schema scripts are embedded in the binary.
 COPY --from=builder --chown=evoltuser:evoltuser /out/evolt-ocpi-partner-console /app/evolt-ocpi-partner-console
 
 USER evoltuser

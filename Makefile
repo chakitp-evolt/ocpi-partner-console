@@ -24,7 +24,7 @@ lint:
 docker-build:
 	docker build -t $(APP):local .
 
-# Local Postgres only, starts empty (apply scripts/db by hand).
+# Local Postgres only; the console initializes its schema on startup.
 db-up:
 	docker compose up -d postgres
 
