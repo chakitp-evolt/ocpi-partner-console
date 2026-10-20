@@ -28,12 +28,14 @@ dev อยู่ที่ URL ข้างบน env อื่นที่ตั
 สำเนานี้ใช้ GitHub `chakitp-evolt/ocpi-partner-console` และมี [render.yaml](render.yaml) สำหรับ Render Web Service แบบ Docker + Neon แยกต่างหาก โดยไม่สร้าง Render Postgres
 
 1. สร้าง Neon project/database เปล่าแยกสำหรับ console และเลือก region ใกล้ Singapore **ไม่ต้องรัน SQL เอง** แอปสร้างตารางตอนเริ่มรันให้
-2. จาก Neon → Connect คัดลอก pooled connection string (hostname มี `-pooler`) พร้อม `sslmode=require` เป็น `DATABASE_URL` เก็บ query parameters ที่ Neon ให้มา และเพิ่ม `connect_timeout=15` ได้ ตัวอย่างอยู่ใน [.env.render.example](.env.render.example)
+2. จาก Neon → Connect คัดลอก pooled connection string (hostname มี `-pooler`) พร้อมรหัสผ่านจริงเป็น `DATABASE_URL` ตรวจว่าไม่ใช่ค่า `********` ใช้ `sslmode=verify-full` และ `connect_timeout=15` ได้ ไม่ส่ง `channel_binding` เพราะ pgx รุ่นที่ใช้ไม่รองรับ query option นี้ ตัวอย่างอยู่ใน [.env.render.example](.env.render.example)
 3. ใน Render เลือก **New → Blueprint** เชื่อม repo นี้ เลือก branch `main` แล้วกรอก `DATABASE_URL` และ `EVOLT_VERSIONS_URL` ที่ Render ถาม ค่า Versions URL ต้องเป็น endpoint ของ Evolt ที่เรียกถึงได้จากอินเทอร์เน็ต
 4. Render สร้าง `ENCRYPTION_KEY` และ `CONSOLE_PASSWORD` ให้ครั้งแรก ดูค่าในหน้า Environment ของ service ส่วน username เป็น `admin` (เปลี่ยนได้ใน Environment) เก็บ encryption key นี้ไว้กับฐานข้อมูลเดิมเสมอ รวมถึงเมื่อสร้าง service ใหม่หรือ restore DB
 5. กด deploy แอปจะรอ DB พร้อม สร้าง schema แล้วเปิด HTTP server จากนั้นเปิด URL `https://<ชื่อ-service>.onrender.com` แล้ว login ด้วย `CONSOLE_USERNAME` / `CONSOLE_PASSWORD` ตรวจ `/health` และ `/readiness` ต้องได้ HTTP 200
 
 `PUBLIC_BASE_URL` ใช้ `RENDER_EXTERNAL_URL` อัตโนมัติ จึงไม่ต้องเดาชื่อโดเมนก่อน deploy ถ้าใช้ custom domain ค่อยตั้ง `PUBLIC_BASE_URL=https://<โดเมนจริง>` ก่อนสร้าง connection ใหม่ ส่วน connection ที่บันทึกไว้แล้วต้องแก้ Partner public URL ในหน้าเว็บให้ตรงด้วย
+
+Blueprint เปิด DEV ที่ `/emsp`, `/cpo`, `/dual/` และ STG ที่ `/stg/emsp`, `/stg/cpo`, `/stg/dual/` ให้เหมือน console ตัวเดิม โดยตั้ง `CONSOLE_ENVS=stg` กับ `EVOLT_VERSIONS_URL_STG=https://bff-external-service.stg.evtech.dev/api/ocpi/versions` ข้อมูล connection และ token แยกตาม env ใน Neon ก้อนเดียว
 
 Blueprint ตั้ง region `singapore`, plan `free`, health check `/health` และปิด auto deploy (`autoDeployTrigger: off`) ให้สั่ง deploy เองหลังเปลี่ยนโค้ด โดยใช้ **1 instance** เสมอ เพราะ mock มี state และ SSE ใน process หากต้องรับ OCPI callback ต่อเนื่อง ให้เปลี่ยนเป็น paid compute: free service พักเมื่อไม่มี traffic และการปลุกอาจทำให้ request แรกหรือ callback timeout ได้ การ restart/redeploy จะตัด SSE และ state ใน memory บางส่วน
 

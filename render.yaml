@@ -23,3 +23,7 @@ services:
         generateValue: true
       - key: EVOLT_VERSIONS_URL
         sync: false
+      - key: CONSOLE_ENVS
+        value: stg
+      - key: EVOLT_VERSIONS_URL_STG
+        value: https://bff-external-service.stg.evtech.dev/api/ocpi/versions
